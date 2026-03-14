@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: buddystore-backend
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: REDIS_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: MAIN_BOT_TOKEN
+        sync: false
+      - key: BOT_MIXED_TOKEN
+        sync: false
+      - key: BOT_MOM_SON_TOKEN
+        sync: false
+      - key: BOT_SRI_LANKAN_TOKEN
+        sync: false
+      - key: BOT_CCTV_TOKEN
+        sync: false
+      - key: BOT_PUBLIC_TOKEN
+        sync: false
+      - key: BOT_RAPE_TOKEN
+        sync: false
+      - key: FRONTEND_URL
+        sync: false

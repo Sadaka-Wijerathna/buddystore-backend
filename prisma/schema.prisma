@@ -1,0 +1,168 @@
+// Prisma Schema for BuddyStore Backend
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+// ─────────────────────────────────────────
+// Users
+// ─────────────────────────────────────────
+model User {
+  id               String   @id @default(uuid())
+  telegramId       BigInt   @unique
+  telegramUsername String   @unique
+  firstName        String
+  lastName         String?
+  languageCode     String?
+  isBot            Boolean  @default(false)
+  passwordHash     String
+  role             Role     @default(USER)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  orders           Order[]
+  videoDeliveries  VideoDelivery[]
+  botVerifyTokens  BotVerifyToken[]
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ─────────────────────────────────────────
+// Registration Tokens (for bot verification)
+// ─────────────────────────────────────────
+model RegistrationToken {
+  id               String    @id @default(uuid())
+  token            String    @unique
+  telegramUsername String
+  telegramId       BigInt?
+  firstName        String?
+  lastName         String?
+  languageCode     String?
+  verified         Boolean   @default(false)
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+
+  @@map("registration_tokens")
+}
+
+// ─────────────────────────────────────────
+// Bots (one per category)
+// ─────────────────────────────────────────
+model Bot {
+  id             String      @id @default(uuid())
+  name           String      @unique
+  category       Category    @unique
+  collectionMode Boolean     @default(false)
+  totalVideos    Int         @default(0)
+  startedUserIds String[]    @default([])   // Telegram user IDs that started this bot
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  videos Videos[]
+  orders Order[]
+
+  @@map("bots")
+}
+
+enum Category {
+  MIXED
+  MOM_SON
+  SRI_LANKAN
+  CCTV
+  PUBLIC
+  RAPE
+}
+
+// ─────────────────────────────────────────
+// One-time tokens for verifying per-bot start (used in checkout)
+// ─────────────────────────────────────────
+model BotVerifyToken {
+  id        String    @id @default(uuid())
+  token     String    @unique @default(cuid())
+  userId    String
+  category  Category
+  verified  Boolean   @default(false)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("bot_verify_tokens")
+}
+
+// ─────────────────────────────────────────
+// Videos stored per bot
+// ─────────────────────────────────────────
+model Videos {
+  id          String   @id @default(uuid())
+  fileId      String   @unique  // Telegram file_id
+  category    Category
+  botId       String
+  collectedAt DateTime @default(now())
+
+  bot             Bot             @relation(fields: [botId], references: [id])
+  videoDeliveries VideoDelivery[]
+
+  @@map("videos")
+}
+
+// ─────────────────────────────────────────
+// Orders
+// ─────────────────────────────────────────
+model Order {
+  id           String      @id @default(uuid())
+  userId       String
+  botId        String
+  category     Category
+  videoCount   Int
+  priceAmount  Float       @default(0)
+  receiptUrl   String
+  status       OrderStatus @default(PENDING)
+  confirmedAt  DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  user            User            @relation(fields: [userId], references: [id])
+  bot             Bot             @relation(fields: [botId], references: [id])
+  videoDeliveries VideoDelivery[]
+
+  @@map("orders")
+}
+
+enum OrderStatus {
+  PENDING      // Receipt uploaded, waiting for admin
+  CONFIRMED    // Admin confirmed payment, bot will start
+  DELIVERING   // Bot is actively sending videos
+  COMPLETED    // All videos sent
+  REJECTED     // Admin rejected the order
+}
+
+// ─────────────────────────────────────────
+// Video Deliveries (tracks what was sent to whom)
+// ─────────────────────────────────────────
+model VideoDelivery {
+  id          String   @id @default(uuid())
+  orderId     String
+  videoId     String
+  userId      String
+  deliveredAt DateTime @default(now())
+
+  order Order  @relation(fields: [orderId], references: [id])
+  video Videos @relation(fields: [videoId], references: [id])
+  user  User   @relation(fields: [userId], references: [id])
+
+  @@unique([videoId, userId]) // A video can only be sent once per user
+  @@map("video_deliveries")
+}
