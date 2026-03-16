@@ -191,8 +191,7 @@ model SpecialCollection {
   slug           String   @unique   // e.g. "anu_kanu" — used in deep link
   title          String             // e.g. "Anu Kanu"
   description    String?
-  thumbnail      String?            // URL (uploaded manually to admin)
-  active         Boolean  @default(true)
+  banner         String?            // URL (uploaded manually to admin)
   collectionMode Boolean  @default(false)  // When ON, admin can upload videos
   totalVideos    Int      @default(0)
   createdAt      DateTime @default(now())

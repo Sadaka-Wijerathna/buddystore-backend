@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as adminController from '../controllers/admin.controller';
 import { authenticate, requireAdmin } from '../middleware/auth.middleware';
+import upload from '../middleware/upload.middleware';
 
 const router = Router();
 
@@ -16,9 +17,8 @@ router.delete('/bots/:id/videos', adminController.clearBotVideos);
 
 // Special Bot Collections
 router.get('/special-collections', adminController.getSpecialCollections);
-router.post('/special-collections', adminController.createSpecialCollection);
+router.post('/special-collections', upload.single('banner'), adminController.createSpecialCollection);
 router.patch('/special-collections/:id/collection-mode', adminController.toggleSpecialCollectionMode);
-router.patch('/special-collections/:id/active', adminController.toggleSpecialCollectionActive);
 router.delete('/special-collections/:id/videos', adminController.clearSpecialCollectionVideos);
 router.delete('/special-collections/:id', adminController.deleteSpecialCollection);
 

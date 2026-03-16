@@ -3,6 +3,7 @@ import { OrderStatus } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { videoDeliveryQueue } from '../jobs/video.queue';
+import { uploadBanner } from '../lib/cloudinary';
 
 // ─── Get all bots with stats ───────────────────────────────────────────────
 export const getBots = async (_req: AuthRequest, res: Response): Promise<void> => {
@@ -586,8 +587,7 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
         slug: c.slug,
         title: c.title,
         description: c.description,
-        thumbnail: c.thumbnail,
-        active: c.active,
+        banner: c.banner,
         collectionMode: c.collectionMode,
         totalVideos: c._count.videos,
         createdAt: c.createdAt,
@@ -615,8 +615,15 @@ export const createSpecialCollection = async (req: AuthRequest, res: Response): 
       return;
     }
 
+    let bannerUrl = null;
+    if (req.file) {
+      const ext = req.file.originalname.split('.').pop();
+      const filename = `special-${slug}-${Date.now()}`;
+      bannerUrl = await uploadBanner(req.file.buffer, filename);
+    }
+
     const collection = await prisma.specialCollection.create({
-      data: { slug, title, description },
+      data: { slug, title, description, banner: bannerUrl },
     });
 
     res.status(201).json({ success: true, data: collection });
@@ -648,28 +655,6 @@ export const toggleSpecialCollectionMode = async (req: AuthRequest, res: Respons
     });
   } catch (error) {
     console.error('[toggleSpecialCollectionMode]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
-
-// PATCH /admin/special-collections/:id/active  { active }
-export const toggleSpecialCollectionActive = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    const { active } = req.body;
-
-    const collection = await prisma.specialCollection.update({
-      where: { id },
-      data: { active: Boolean(active) },
-    });
-
-    res.json({
-      success: true,
-      message: `Collection "${collection.title}" is now ${collection.active ? 'active' : 'inactive'}`,
-      data: { id: collection.id, active: collection.active },
-    });
-  } catch (error) {
-    console.error('[toggleSpecialCollectionActive]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };

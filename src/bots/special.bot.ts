@@ -116,7 +116,7 @@ if (specialBotInstance) {
 
     const collection = await getCollection(slug);
 
-    if (!collection || !collection.active) {
+    if (!collection) {
       await ctx.reply(`❌ Collection not found or not available.`);
       return;
     }
@@ -161,7 +161,7 @@ if (specialBotInstance) {
     }
 
     const lines = collections.map(c =>
-      `${c.collectionMode ? '🟢' : '🔴'} *${c.title}* (\`${c.slug}\`) — ${c._count.videos} video(s) ${c.active ? '' : '(inactive)'}`
+      `${c.collectionMode ? '🟢' : '🔴'} *${c.title}* (\`${c.slug}\`) — ${c._count.videos} video(s)`
     );
 
     await ctx.reply(
