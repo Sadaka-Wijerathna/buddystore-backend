@@ -311,6 +311,25 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
       return;
     }
 
+    // Rate-limit: reject if an OTP was already sent within the last 30 seconds
+    const OTP_RESEND_COOLDOWN_SECONDS = 30;
+    const recentOtp = await prisma.passwordResetOtp.findFirst({
+      where: { telegramUsername: username, used: false },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (recentOtp) {
+      const secondsSinceSent = Math.floor((Date.now() - recentOtp.createdAt.getTime()) / 1000);
+      const remaining = OTP_RESEND_COOLDOWN_SECONDS - secondsSinceSent;
+      if (remaining > 0) {
+        res.status(429).json({
+          success: false,
+          message: `Please wait ${remaining} second${remaining !== 1 ? 's' : ''} before requesting a new OTP.`,
+          retryAfter: remaining,
+        });
+        return;
+      }
+    }
+
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
@@ -355,7 +374,43 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
   }
 };
 
-// ─── Forgot Password Step 2: Verify OTP and Reset Password ────────────────────
+// ─── Forgot Password Step 2: Verify OTP (without consuming it) ───────────────
+// Lets the frontend confirm the OTP is correct before showing the password form.
+export const verifyOtp = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { telegramUsername, otp } = req.body;
+
+    if (!telegramUsername || !otp) {
+      res.status(400).json({ success: false, message: 'Username and OTP are required' });
+      return;
+    }
+
+    const username = telegramUsername.replace('@', '').trim().toLowerCase();
+
+    const otpRecord = await prisma.passwordResetOtp.findFirst({
+      where: { telegramUsername: username, otp, used: false },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!otpRecord) {
+      res.status(400).json({ success: false, message: 'Invalid OTP. Please check and try again.' });
+      return;
+    }
+
+    if (new Date() > otpRecord.expiresAt) {
+      res.status(410).json({ success: false, message: 'OTP has expired. Please request a new one.' });
+      return;
+    }
+
+    // OTP is valid — do NOT mark as used yet; resetPassword will do that
+    res.json({ success: true, message: 'OTP verified.' });
+  } catch (error) {
+    console.error('[verifyOtp]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Forgot Password Step 3: Verify OTP and Reset Password ────────────────────
 export const resetPassword = async (req: Request, res: Response): Promise<void> => {
   try {
     const { telegramUsername, otp, newPassword } = req.body;

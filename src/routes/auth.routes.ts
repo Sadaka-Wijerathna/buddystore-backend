@@ -22,7 +22,10 @@ router.post('/login', authController.login);
 // Forgot Password Step 1: Request OTP (sent via Telegram)
 router.post('/forgot-password/request', authController.requestPasswordReset);
 
-// Forgot Password Step 2: Verify OTP and set new password
+// Forgot Password Step 2: Verify OTP is correct (does NOT consume it)
+router.post('/forgot-password/verify-otp', authController.verifyOtp);
+
+// Forgot Password Step 3: Verify OTP + set new password (consumes the OTP)
 router.post('/forgot-password/reset', authController.resetPassword);
 
 // Refresh JWT token (authenticated users — call before token expires)
