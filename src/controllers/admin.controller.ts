@@ -20,6 +20,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
         category: bot.category,
         collectionMode: bot.collectionMode,
         totalVideos: bot._count.videos,
+        minVideoCount: bot.minVideoCount,
       })),
     });
   } catch (error) {
@@ -46,6 +47,34 @@ export const toggleCollectionMode = async (req: AuthRequest, res: Response): Pro
     });
   } catch (error) {
     console.error('[toggleCollectionMode]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Update bot min video count ────────────────────────────────────────────
+export const updateBotMinVideoCount = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { minVideoCount } = req.body;
+
+    const count = parseInt(minVideoCount, 10);
+    if (isNaN(count) || count < 1) {
+      res.status(400).json({ success: false, message: 'minVideoCount must be a positive integer' });
+      return;
+    }
+
+    const bot = await prisma.bot.update({
+      where: { id },
+      data: { minVideoCount: count },
+    });
+
+    res.json({
+      success: true,
+      message: `Minimum video count updated to ${count} for ${bot.name}`,
+      data: { id: bot.id, minVideoCount: bot.minVideoCount },
+    });
+  } catch (error) {
+    console.error('[updateBotMinVideoCount]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
