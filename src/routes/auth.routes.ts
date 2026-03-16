@@ -18,4 +18,11 @@ router.post('/login/check-username', authController.checkLoginUsername);
 // Login
 router.post('/login', authController.login);
 
+// Forgot Password Step 1: Request OTP (sent via Telegram)
+router.post('/forgot-password/request', authController.requestPasswordReset);
+
+// Forgot Password Step 2: Verify OTP and set new password
+router.post('/forgot-password/reset', authController.resetPassword);
+
 export default router;
+
