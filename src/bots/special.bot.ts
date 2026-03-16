@@ -36,26 +36,48 @@ async function saveVideoToCollection(ctx: Context, fileId: string) {
   const caption = ctx.message?.caption;
   const slug = extractSlug(caption);
 
-  if (!slug) {
-    await ctx.reply('⚠️ No collection tag found. Send a video with caption #slug (e.g. #anu_kanu).');
-    return;
-  }
+  let collection;
 
-  const collection = await prisma.specialCollection.findUnique({ where: { slug } });
-  if (!collection) {
-    await ctx.reply(`❌ Collection *${slug}* not found. Create it in the admin panel first.`, { parse_mode: 'Markdown' });
-    return;
-  }
+  if (slug) {
+    // If they explicitly provided a #slug, use that collection
+    collection = await prisma.specialCollection.findUnique({ where: { slug } });
+    if (!collection) {
+      await ctx.reply(`❌ Collection *${slug}* not found. Create it in the admin panel first.`, { parse_mode: 'Markdown' });
+      return;
+    }
+    if (!collection.collectionMode) {
+      await ctx.reply(`⛔ Collection mode is OFF for *${collection.title}*. Enable it in the admin panel first.`, { parse_mode: 'Markdown' });
+      return;
+    }
+  } else {
+    // If no #slug is provided, look for any collection that currently has collectionMode = true
+    const activeCollections = await prisma.specialCollection.findMany({
+      where: { collectionMode: true },
+    });
 
-  if (!collection.collectionMode) {
-    await ctx.reply(`⛔ Collection mode is OFF for *${collection.title}*. Enable it in the admin panel first.`, { parse_mode: 'Markdown' });
-    return;
+    if (activeCollections.length === 0) {
+      await ctx.reply('⚠️ No specials are currently in *Collection Mode*. Please enable collection mode for a special bot in the admin panel first, or use a `#slug` caption.', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (activeCollections.length > 1) {
+      const activeNames = activeCollections.map(c => `\`#${c.slug}\``).join(', ');
+      await ctx.reply(`⚠️ Multiple specials are currently in *Collection Mode*. Please provide a caption tag to specify which one to upload to (e.g. ${activeNames}).`, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // Exactly one collection is active, so we use it automatically
+    collection = activeCollections[0];
   }
 
   // Avoid duplicates
   const existing = await prisma.specialVideo.findUnique({ where: { fileId } });
   if (existing) {
-    await ctx.reply(`⚠️ This video is already saved to *${collection.title}*.`, { parse_mode: 'Markdown' });
+    if (existing.collectionId === collection.id) {
+      await ctx.reply(`⚠️ This video is already saved to *${collection.title}*.`, { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply(`⚠️ This video is already saved in another collection.`, { parse_mode: 'Markdown' });
+    }
     return;
   }
 
