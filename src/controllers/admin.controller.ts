@@ -288,6 +288,57 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response): Promis
   }
 };
 
+// ─── Confirm all PENDING orders sharing the same receipt URL ─────────────────
+// PATCH /admin/orders/confirm-by-receipt   body: { receiptUrl: string }
+export const confirmOrdersByReceipt = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { receiptUrl } = req.body as { receiptUrl: string };
+    if (!receiptUrl) {
+      res.status(400).json({ success: false, message: 'receiptUrl is required' });
+      return;
+    }
+
+    const orders = await prisma.order.findMany({
+      where: { receiptUrl, status: 'PENDING' },
+      include: { user: { select: { id: true, telegramId: true } } },
+    });
+
+    if (orders.length === 0) {
+      res.status(404).json({ success: false, message: 'No pending orders found for this receipt' });
+      return;
+    }
+
+    const confirmed: string[] = [];
+    for (const order of orders) {
+      await prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'CONFIRMED', confirmedAt: new Date() },
+      });
+      await videoDeliveryQueue.add(
+        'deliver-videos',
+        {
+          orderId: order.id,
+          userId: order.user.id,
+          userTelegramId: order.user.telegramId.toString(),
+          category: order.category,
+          videoCount: order.videoCount,
+        },
+        { attempts: 3, backoff: { type: 'exponential', delay: 5000 } }
+      );
+      confirmed.push(order.id);
+    }
+
+    res.json({
+      success: true,
+      message: `${confirmed.length} order(s) confirmed and queued for delivery`,
+      data: { confirmed },
+    });
+  } catch (error) {
+    console.error('[confirmOrdersByReceipt]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 // ─── Get order delivery progress ──────────────────────────────────────────
 export const getOrderProgress = async (req: AuthRequest, res: Response): Promise<void> => {
   try {

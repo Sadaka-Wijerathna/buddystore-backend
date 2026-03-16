@@ -353,6 +353,7 @@ export const getMyOrders = async (req: AuthRequest, res: Response): Promise<void
       videoCount: order.videoCount,
       delivered: order._count.videoDeliveries,
       status: order.status,
+      priceAmount: order.priceAmount,
       receiptUrl: order.receiptUrl,
       createdAt: order.createdAt,
       completedAt: order.completedAt,
