@@ -149,7 +149,7 @@ if (specialBotInstance) {
       return;
     }
 
-    const lines = collections.map(c =>
+    const lines = collections.map((c: any) =>
       `${c.collectionMode ? '🟢' : '🔴'} *${c.title}* (\`${c.slug}\`) — ${c._count.videos} video(s)`
     );
 
