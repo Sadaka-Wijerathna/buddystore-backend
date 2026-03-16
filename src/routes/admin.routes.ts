@@ -20,6 +20,7 @@ router.put('/users/:id/role', adminController.updateUserRole);
 
 // Orders
 router.get('/orders', adminController.getAllOrders);
+router.delete('/orders', adminController.deleteAllOrders);
 router.patch('/orders/confirm-by-receipt', adminController.confirmOrdersByReceipt);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
 router.get('/orders/:id/progress', adminController.getOrderProgress);

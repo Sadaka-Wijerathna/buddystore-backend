@@ -487,3 +487,15 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
   }
 };
 
+
+// ─── Delete all orders (admin test cleanup) ────────────────────────────────
+export const deleteAllOrders = async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    await prisma.videoDelivery.deleteMany({});
+    const { count } = await prisma.order.deleteMany({});
+    res.json({ success: true, message: `Deleted ${count} orders and all related deliveries.`, data: { count } });
+  } catch (error) {
+    console.error('[deleteAllOrders]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
