@@ -565,3 +565,156 @@ export const deleteAllOrders = async (_req: AuthRequest, res: Response): Promise
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Special Bot Admin Endpoints ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// GET /admin/special-collections
+export const getSpecialCollections = async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const collections = await prisma.specialCollection.findMany({
+      include: { _count: { select: { videos: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    res.json({
+      success: true,
+      data: collections.map(c => ({
+        id: c.id,
+        slug: c.slug,
+        title: c.title,
+        description: c.description,
+        thumbnail: c.thumbnail,
+        active: c.active,
+        collectionMode: c.collectionMode,
+        totalVideos: c._count.videos,
+        createdAt: c.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('[getSpecialCollections]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// POST /admin/special-collections  { slug, title, description? }
+export const createSpecialCollection = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { slug, title, description } = req.body as { slug: string; title: string; description?: string };
+
+    if (!slug || !title) {
+      res.status(400).json({ success: false, message: 'slug and title are required' });
+      return;
+    }
+
+    // Validate slug format
+    if (!/^[a-z0-9_]+$/.test(slug)) {
+      res.status(400).json({ success: false, message: 'slug must be lowercase letters, numbers, and underscores only' });
+      return;
+    }
+
+    const collection = await prisma.specialCollection.create({
+      data: { slug, title, description },
+    });
+
+    res.status(201).json({ success: true, data: collection });
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      res.status(409).json({ success: false, message: 'A collection with this slug already exists' });
+      return;
+    }
+    console.error('[createSpecialCollection]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// PATCH /admin/special-collections/:id/collection-mode  { enabled }
+export const toggleSpecialCollectionMode = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { enabled } = req.body;
+
+    const collection = await prisma.specialCollection.update({
+      where: { id },
+      data: { collectionMode: Boolean(enabled) },
+    });
+
+    res.json({
+      success: true,
+      message: `Collection mode ${collection.collectionMode ? 'enabled' : 'disabled'} for "${collection.title}"`,
+      data: { id: collection.id, collectionMode: collection.collectionMode },
+    });
+  } catch (error) {
+    console.error('[toggleSpecialCollectionMode]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// PATCH /admin/special-collections/:id/active  { active }
+export const toggleSpecialCollectionActive = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { active } = req.body;
+
+    const collection = await prisma.specialCollection.update({
+      where: { id },
+      data: { active: Boolean(active) },
+    });
+
+    res.json({
+      success: true,
+      message: `Collection "${collection.title}" is now ${collection.active ? 'active' : 'inactive'}`,
+      data: { id: collection.id, active: collection.active },
+    });
+  } catch (error) {
+    console.error('[toggleSpecialCollectionActive]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// DELETE /admin/special-collections/:id/videos — clear all videos from a collection
+export const clearSpecialCollectionVideos = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+
+    const collection = await prisma.specialCollection.findUnique({ where: { id } });
+    if (!collection) {
+      res.status(404).json({ success: false, message: 'Collection not found' });
+      return;
+    }
+
+    const { count } = await prisma.specialVideo.deleteMany({ where: { collectionId: id } });
+
+    await prisma.specialCollection.update({
+      where: { id },
+      data: { totalVideos: 0 },
+    });
+
+    res.json({
+      success: true,
+      message: `Cleared ${count} video(s) from "${collection.title}"`,
+      data: { deleted: count },
+    });
+  } catch (error) {
+    console.error('[clearSpecialCollectionVideos]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// DELETE /admin/special-collections/:id — delete a whole collection
+export const deleteSpecialCollection = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+
+    await prisma.specialVideo.deleteMany({ where: { collectionId: id } });
+    await prisma.specialCollection.delete({ where: { id } });
+
+    res.json({ success: true, message: 'Collection deleted' });
+  } catch (error) {
+    console.error('[deleteSpecialCollection]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+

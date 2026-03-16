@@ -14,6 +14,14 @@ router.patch('/bots/:id/settings', adminController.updateBotSettings);
 router.patch('/bots/:id/min-video-count', adminController.updateBotMinVideoCount);
 router.delete('/bots/:id/videos', adminController.clearBotVideos);
 
+// Special Bot Collections
+router.get('/special-collections', adminController.getSpecialCollections);
+router.post('/special-collections', adminController.createSpecialCollection);
+router.patch('/special-collections/:id/collection-mode', adminController.toggleSpecialCollectionMode);
+router.patch('/special-collections/:id/active', adminController.toggleSpecialCollectionActive);
+router.delete('/special-collections/:id/videos', adminController.clearSpecialCollectionVideos);
+router.delete('/special-collections/:id', adminController.deleteSpecialCollection);
+
 // Users
 router.get('/users', adminController.getUsers);
 router.put('/users/:id/role', adminController.updateUserRole);

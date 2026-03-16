@@ -187,14 +187,16 @@ model VideoDelivery {
 // Special Bot — Free video collections delivered via deep link
 // ─────────────────────────────────────────
 model SpecialCollection {
-  id          String   @id @default(uuid())
-  slug        String   @unique   // e.g. "anu_kanu" — used in deep link
-  title       String             // e.g. "Anu Kanu"
-  description String?
-  thumbnail   String?            // URL (uploaded manually to admin)
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(uuid())
+  slug           String   @unique   // e.g. "anu_kanu" — used in deep link
+  title          String             // e.g. "Anu Kanu"
+  description    String?
+  thumbnail      String?            // URL (uploaded manually to admin)
+  active         Boolean  @default(true)
+  collectionMode Boolean  @default(false)  // When ON, admin can upload videos
+  totalVideos    Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   videos SpecialVideo[]
 
