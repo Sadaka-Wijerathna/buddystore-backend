@@ -10,6 +10,7 @@ router.use(authenticate, requireAdmin);
 // Bots
 router.get('/bots', adminController.getBots);
 router.patch('/bots/:id/collection-mode', adminController.toggleCollectionMode);
+router.patch('/bots/:id/settings', adminController.updateBotSettings);
 router.patch('/bots/:id/min-video-count', adminController.updateBotMinVideoCount);
 router.delete('/bots/:id/videos', adminController.clearBotVideos);
 

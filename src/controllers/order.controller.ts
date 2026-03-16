@@ -45,6 +45,7 @@ export const getCategoryLimits = async (req: AuthRequest, res: Response): Promis
         max: availableVideos,
         totalInBot: bot.totalVideos,
         alreadyReceived,
+        pricePerVideo: bot.pricePerVideo,
       },
     });
   } catch (error) {

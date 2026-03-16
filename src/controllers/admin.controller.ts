@@ -21,6 +21,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
         collectionMode: bot.collectionMode,
         totalVideos: bot._count.videos,
         minVideoCount: bot.minVideoCount,
+        pricePerVideo: bot.pricePerVideo,
       })),
     });
   } catch (error) {
@@ -51,7 +52,52 @@ export const toggleCollectionMode = async (req: AuthRequest, res: Response): Pro
   }
 };
 
-// ─── Update bot min video count ────────────────────────────────────────────
+// ─── Update bot settings (min video count and price per video) ───────────────
+// PATCH /admin/bots/:id/settings  { minVideoCount?, pricePerVideo? }
+export const updateBotSettings = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { minVideoCount, pricePerVideo } = req.body;
+
+    const data: { minVideoCount?: number; pricePerVideo?: number } = {};
+
+    if (minVideoCount !== undefined) {
+      const count = parseInt(minVideoCount, 10);
+      if (isNaN(count) || count < 1) {
+        res.status(400).json({ success: false, message: 'minVideoCount must be a positive integer' });
+        return;
+      }
+      data.minVideoCount = count;
+    }
+
+    if (pricePerVideo !== undefined) {
+      const price = parseFloat(pricePerVideo);
+      if (isNaN(price) || price < 0) {
+        res.status(400).json({ success: false, message: 'pricePerVideo must be a non-negative number' });
+        return;
+      }
+      data.pricePerVideo = price;
+    }
+
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ success: false, message: 'No valid fields to update' });
+      return;
+    }
+
+    const bot = await prisma.bot.update({ where: { id }, data });
+
+    res.json({
+      success: true,
+      message: `Settings updated for ${bot.name}`,
+      data: { id: bot.id, minVideoCount: bot.minVideoCount, pricePerVideo: bot.pricePerVideo },
+    });
+  } catch (error) {
+    console.error('[updateBotSettings]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Update bot min video count (kept for backwards-compat) ───────────────
 export const updateBotMinVideoCount = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
