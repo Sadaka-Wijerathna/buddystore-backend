@@ -5,6 +5,33 @@ import prisma from '../lib/prisma';
 import { categoryBots } from '../bots/category.bot';
 import { getIO } from '../lib/socket';
 
+// ─── Redis connection options ───────────────────────────────────────────────────
+// Upstash Redis uses TLS (rediss://) — we parse the URL and pass explicit
+// tls options so ioredis can connect from Railway without ETIMEDOUT.
+function getRedisConnection() {
+  const redisUrl = config.redis.url;
+
+  if (!redisUrl) {
+    throw new Error('REDIS_URL is not set');
+  }
+
+  // Parse the rediss:// URL manually for ioredis
+  const url = new URL(redisUrl);
+  const isTls = url.protocol === 'rediss:';
+
+  return {
+    host: url.hostname,
+    port: parseInt(url.port || (isTls ? '6380' : '6379'), 10),
+    username: url.username || undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    tls: isTls ? { rejectUnauthorized: false } : undefined,
+    connectTimeout: 20000,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+    lazyConnect: true,
+  };
+}
+
 // ─── Lazy Queue Getter ─────────────────────────────────────────────────────────
 // Queue is created on-demand so it doesn't try to connect to Redis at startup
 let _queue: Queue | null = null;
@@ -12,7 +39,7 @@ let _queue: Queue | null = null;
 export const getVideoDeliveryQueue = (): Queue => {
   if (!_queue) {
     _queue = new Queue('video-delivery', {
-      connection: { url: config.redis.url },
+      connection: getRedisConnection(),
       defaultJobOptions: {
         removeOnComplete: 100,
         removeOnFail: 500,
@@ -109,7 +136,7 @@ export const createVideoDeliveryWorker = () => {
       return { orderId, sentCount };
     },
     {
-      connection: { url: config.redis.url },
+      connection: getRedisConnection(),
       concurrency: 2, // Process max 2 delivery jobs at once
     }
   );
