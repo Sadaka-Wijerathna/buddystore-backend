@@ -582,12 +582,13 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
 
     res.json({
       success: true,
-      data: collections.map(c => ({
+      data: collections.map((c: any) => ({
         id: c.id,
         slug: c.slug,
         title: c.title,
         description: c.description,
         banner: c.banner,
+        trendingTag: c.trendingTag,
         collectionMode: c.collectionMode,
         totalVideos: c._count.videos,
         createdAt: c.createdAt,
@@ -602,7 +603,7 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
 // POST /admin/special-collections  { slug, title, description? }
 export const createSpecialCollection = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { slug, title, description } = req.body as { slug: string; title: string; description?: string };
+    const { slug, title, description, trendingTag } = req.body as { slug: string; title: string; description?: string; trendingTag?: string };
 
     if (!slug || !title) {
       res.status(400).json({ success: false, message: 'slug and title are required' });
@@ -623,7 +624,7 @@ export const createSpecialCollection = async (req: AuthRequest, res: Response): 
     }
 
     const collection = await prisma.specialCollection.create({
-      data: { slug, title, description, banner: bannerUrl },
+      data: { slug, title, description, banner: bannerUrl, trendingTag: trendingTag || 'Trending' },
     });
 
     res.status(201).json({ success: true, data: collection });
