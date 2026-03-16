@@ -126,26 +126,15 @@ if (specialBotInstance) {
       return;
     }
 
-    await ctx.reply(
-      `🎬 *${collection.title}*\n\n${collection.description || 'Sending your videos now...'}\n\n📤 Sending ${collection.videos.length} video(s)...`,
-      { parse_mode: 'Markdown' }
-    );
-
-    let sent = 0;
+    // Logic to send videos is now silent without status messages as requested by user.
     for (const video of collection.videos) {
       try {
         await bot.api.sendVideo(from.id, video.fileId);
-        sent++;
         await new Promise(r => setTimeout(r, 1000));
       } catch (err) {
         console.error(`[BuddySpecialBot] Failed to send video ${video.fileId}:`, err);
       }
     }
-
-    await ctx.reply(
-      `✅ Done! Sent ${sent}/${collection.videos.length} video(s) from *${collection.title}*. Enjoy! 🎉`,
-      { parse_mode: 'Markdown' }
-    );
   });
 
   // ─── /status — shows all collections and their video counts ────────────────
