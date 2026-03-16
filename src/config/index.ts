@@ -26,7 +26,6 @@ const config = {
     public: process.env.BOT_PUBLIC_TOKEN || '',
     rape: process.env.BOT_RAPE_TOKEN || '',
     special: process.env.BOT_SPECIAL_TOKEN || '',
-    specialAdminId: process.env.BOT_SPECIAL_ADMIN_ID || '',
   },
 };
 
