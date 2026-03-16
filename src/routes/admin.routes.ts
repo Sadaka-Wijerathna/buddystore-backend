@@ -14,10 +14,15 @@ router.delete('/bots/:id/videos', adminController.clearBotVideos);
 
 // Users
 router.get('/users', adminController.getUsers);
+router.put('/users/:id/role', adminController.updateUserRole);
 
 // Orders
 router.get('/orders', adminController.getAllOrders);
 router.patch('/orders/:id/status', adminController.updateOrderStatus);
 router.get('/orders/:id/progress', adminController.getOrderProgress);
 
+// Analytics
+router.get('/analytics', adminController.getAnalytics);
+
 export default router;
+

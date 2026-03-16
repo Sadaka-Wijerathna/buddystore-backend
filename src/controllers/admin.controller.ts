@@ -246,3 +246,116 @@ export const getOrderProgress = async (req: AuthRequest, res: Response): Promise
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+// ─── Update user role (promote / demote) ──────────────────────────────────
+export const updateUserRole = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const targetId = String(req.params.id);
+    const { role } = req.body as { role: 'ADMIN' | 'USER' };
+
+    if (!['ADMIN', 'USER'].includes(role)) {
+      res.status(400).json({ success: false, message: 'Role must be ADMIN or USER' });
+      return;
+    }
+
+    // Prevent self-demotion
+    if (req.user?.id === targetId && role === 'USER') {
+      res.status(400).json({ success: false, message: 'You cannot remove your own admin role' });
+      return;
+    }
+
+    const user = await prisma.user.update({
+      where: { id: targetId },
+      data: { role },
+      select: { id: true, telegramUsername: true, firstName: true, role: true },
+    });
+
+    res.json({
+      success: true,
+      message: `${user.firstName} is now ${role === 'ADMIN' ? 'an Admin' : 'a regular User'}`,
+      data: user,
+    });
+  } catch (error) {
+    console.error('[updateUserRole]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Analytics ────────────────────────────────────────────────────────────
+export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const orders = await prisma.order.findMany({
+      select: {
+        status: true,
+        category: true,
+        priceAmount: true,
+        videoCount: true,
+        createdAt: true,
+      },
+    });
+
+    // Daily revenue — last 14 days
+    const now = new Date();
+    const dailyRevenue: { date: string; revenue: number; orders: number }[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().slice(0, 10);
+      const dayOrders = orders.filter(o => {
+        const created = new Date(o.createdAt).toISOString().slice(0, 10);
+        return created === dateStr && o.status !== 'REJECTED';
+      });
+      dailyRevenue.push({
+        date: dateStr,
+        revenue: dayOrders.reduce((s, o) => s + Number(o.priceAmount), 0),
+        orders: dayOrders.length,
+      });
+    }
+
+    // Status breakdown
+    const statusBreakdown: Record<string, number> = {};
+    for (const o of orders) {
+      statusBreakdown[o.status] = (statusBreakdown[o.status] ?? 0) + 1;
+    }
+
+    // Category breakdown
+    const catMap: Record<string, { orders: number; revenue: number; videos: number }> = {};
+    for (const o of orders) {
+      if (!catMap[o.category]) catMap[o.category] = { orders: 0, revenue: 0, videos: 0 };
+      catMap[o.category].orders++;
+      catMap[o.category].videos += o.videoCount;
+      if (o.status !== 'REJECTED') catMap[o.category].revenue += Number(o.priceAmount);
+    }
+    const categoryBreakdown = Object.entries(catMap).map(([category, stats]) => ({
+      category,
+      ...stats,
+    })).sort((a, b) => b.revenue - a.revenue);
+
+    // Top stats
+    const confirmed = orders.filter(o => o.status !== 'REJECTED');
+    const totalRevenue = confirmed.reduce((s, o) => s + Number(o.priceAmount), 0);
+    const completed = orders.filter(o => o.status === 'COMPLETED').length;
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const weeklyOrders = orders.filter(o => new Date(o.createdAt) >= weekAgo).length;
+
+    res.json({
+      success: true,
+      data: {
+        dailyRevenue,
+        statusBreakdown,
+        categoryBreakdown,
+        topStats: {
+          totalRevenue,
+          totalOrders: orders.length,
+          avgOrderValue: confirmed.length ? Math.round(totalRevenue / confirmed.length) : 0,
+          completionRate: orders.length ? Math.round((completed / orders.length) * 100) : 0,
+          weeklyOrders,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[getAnalytics]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
