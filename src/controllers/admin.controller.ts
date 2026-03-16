@@ -412,6 +412,7 @@ export const updateUserRole = async (req: AuthRequest, res: Response): Promise<v
 export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
     const orders = await prisma.order.findMany({
+      where: { status: { not: 'REJECTED' } },
       select: {
         status: true,
         category: true,
@@ -492,8 +493,8 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
 export const deleteOrder = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    await prisma.videoDelivery.deleteMany({ where: { orderId: id } });
-    await prisma.order.delete({ where: { id } });
+    await prisma.videoDelivery.deleteMany({ where: { orderId: id as string } });
+    await prisma.order.delete({ where: { id: id as string } });
     res.json({ success: true, message: 'Order deleted successfully.' });
   } catch (error) {
     console.error('[deleteOrder]', error);
