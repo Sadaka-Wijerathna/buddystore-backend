@@ -4,7 +4,17 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import prisma from '../lib/prisma';
 import config from '../config';
-import { mainBot } from '../bots/main.bot';
+// Lazy-load mainBot to avoid crashing the entire controller if the
+// MAIN_BOT_TOKEN env var is missing or the grammy Bot constructor throws.
+function getMainBot() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { mainBot } = require('../bots/main.bot');
+    return mainBot;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Login Step 1: Check if username has an account ───────────────────────────
 export const checkLoginUsername = async (req: Request, res: Response): Promise<void> => {
@@ -86,8 +96,11 @@ export const checkUsername = async (req: Request, res: Response): Promise<void> 
     // Build bot deep link using the real bot username
     let botUsername = 'BuddyStoreBot';
     try {
-      const me = await mainBot.api.getMe();
-      botUsername = me.username ?? botUsername;
+      const bot = getMainBot();
+      if (bot) {
+        const me = await bot.api.getMe();
+        botUsername = me.username ?? botUsername;
+      }
     } catch { /* use fallback */ }
     const botStartLink = `https://t.me/${botUsername}?start=${token}`;
 
@@ -232,7 +245,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     const username = telegramUsername.replace('@', '').trim();
 
-    const user = await prisma.user.findUnique({ where: { telegramUsername: username } });
+    const user = await prisma.user.findFirst({
+      where: { telegramUsername: { equals: username, mode: 'insensitive' } },
+    });
 
     if (!user) {
       res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -311,8 +326,15 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
     });
 
     // Send OTP via Telegram main bot
+    const bot = getMainBot();
+    if (!bot) {
+      console.error('[requestPasswordReset] Main bot is not available (token missing or invalid)');
+      res.status(503).json({ success: false, message: 'Password reset service is temporarily unavailable. Please try again later or contact support.' });
+      return;
+    }
+
     try {
-      await mainBot.api.sendMessage(
+      await bot.api.sendMessage(
         Number(user.telegramId),
         `🔐 *BuddyStore Password Reset*\n\nYour one-time password (OTP) is:\n\n*${otp}*\n\nThis code expires in 5 minutes. Do not share it with anyone.\n\nIf you did not request this, please ignore this message.`,
         { parse_mode: 'Markdown' }
@@ -395,8 +417,45 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
   }
 };
 
-// ─── Change Password (authenticated) ──────────────────────────────────────────
+// ─── Refresh JWT Token ────────────────────────────────────────────────────
 import { AuthRequest } from '../middleware/auth.middleware';
+
+export const refreshToken = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    // req.user is set by the authenticate middleware — token is still valid
+    const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+    if (!user) {
+      res.status(401).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    const newToken = jwt.sign(
+      { id: user.id, role: user.role, telegramUsername: user.telegramUsername },
+      config.jwt.secret,
+      { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
+    );
+
+    res.json({
+      success: true,
+      data: {
+        token: newToken,
+        user: {
+          id: user.id,
+          telegramId: user.telegramId.toString(),
+          telegramUsername: user.telegramUsername,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          role: user.role,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[refreshToken]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Change Password (authenticated) ──────────────────────────────────────────
 
 export const changePassword = async (req: AuthRequest, res: Response): Promise<void> => {
   try {

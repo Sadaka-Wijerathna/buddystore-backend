@@ -3,6 +3,16 @@ import { Category } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadReceipt } from '../lib/cloudinary';
+import { getIO } from '../lib/socket';
+
+/** Emit a real-time alert to all connected admin clients */
+function notifyAdmins(event: string, payload: Record<string, unknown>) {
+  try {
+    getIO().to('admin').emit(event, payload);
+  } catch {
+    // Socket.io may not be initialised in tests — silently skip
+  }
+}
 
 const VALID_CATEGORIES: Category[] = ['MIXED', 'MOM_SON', 'SRI_LANKAN', 'CCTV', 'PUBLIC', 'RAPE'];
 
@@ -82,6 +92,12 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       return;
     }
 
+    const price = parseFloat(priceAmount);
+    if (isNaN(price) || price <= 0) {
+      res.status(400).json({ success: false, message: 'A valid positive price amount is required' });
+      return;
+    }
+
     const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
     if (!bot) {
       res.status(404).json({ success: false, message: 'No bot configured for this category' });
@@ -108,7 +124,6 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       req.file.buffer,
       `receipt-${Date.now()}-${Math.random().toString(36).slice(2)}`
     );
-    const price = parseFloat(priceAmount) || 0;
 
     const order = await prisma.order.create({
       data: {
@@ -120,6 +135,15 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
         receiptUrl,
         status: 'PENDING',
       },
+    });
+
+    // Notify admins in real-time
+    notifyAdmins('admin:new-order', {
+      orderId: order.id,
+      category: order.category,
+      videoCount: order.videoCount,
+      priceAmount: order.priceAmount,
+      createdAt: order.createdAt,
     });
 
     res.status(201).json({
@@ -275,6 +299,12 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
         continue;
       }
 
+      const price = parseFloat(String(priceAmount));
+      if (isNaN(price) || price <= 0) {
+        errors.push({ category, message: 'A valid positive price amount is required' });
+        continue;
+      }
+
       // Find bot for this category
       const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
       if (!bot) {
@@ -305,7 +335,7 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
           botId: bot.id,
           category: category as Category,
           videoCount: count,
-          priceAmount: parseFloat(String(priceAmount)) || 0,
+          priceAmount: price,
           receiptUrl,
           status: 'PENDING',
         },
@@ -321,6 +351,15 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
         errors,
       });
       return;
+    }
+
+    // Notify admins in real-time
+    for (const o of createdOrders) {
+      notifyAdmins('admin:new-order', {
+        orderId: o.orderId,
+        category: o.category,
+        status: o.status,
+      });
     }
 
     res.status(201).json({

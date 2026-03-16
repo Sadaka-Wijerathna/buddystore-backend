@@ -10,7 +10,9 @@
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "seed:bots": "ts-node src/scripts/seed-bots.ts",
+    "set:admin": "ts-node src/scripts/set-admin.ts"
   },
   "keywords": [],
   "author": "",

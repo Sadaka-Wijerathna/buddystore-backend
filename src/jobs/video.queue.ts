@@ -4,6 +4,19 @@ import config from '../config';
 import prisma from '../lib/prisma';
 import { categoryBots } from '../bots/category.bot';
 import { getIO } from '../lib/socket';
+import type { Server as SocketIOServer } from 'socket.io';
+
+/**
+ * Safe wrapper around getIO() — returns null instead of throwing
+ * when Socket.io hasn't been initialised (e.g. in a standalone worker process).
+ */
+function safeGetIO(): SocketIOServer | null {
+  try {
+    return getIO();
+  } catch {
+    return null;
+  }
+}
 
 // ─── Redis connection options ───────────────────────────────────────────────────
 // Upstash Redis uses TLS (rediss://) — we parse the URL and pass explicit
@@ -71,7 +84,7 @@ export const createVideoDeliveryWorker = () => {
     'video-delivery',
     async (job: Job<VideoDeliveryJobData>) => {
       const { orderId, userId, userTelegramId, category, videoCount } = job.data;
-      const io = getIO();
+      const io = safeGetIO();
 
       console.log(`[Job] Starting video delivery for order ${orderId}`);
 
@@ -81,8 +94,8 @@ export const createVideoDeliveryWorker = () => {
         data: { status: 'DELIVERING' },
       });
 
-      // Notify frontend via WebSocket
-      io.to(`order:${orderId}`).emit('order:status', {
+      // Notify frontend via WebSocket (skipped if Socket.io not available)
+      io?.to(`order:${orderId}`).emit('order:status', {
         orderId,
         status: 'DELIVERING',
         delivered: 0,
@@ -108,7 +121,7 @@ export const createVideoDeliveryWorker = () => {
           job.updateProgress(percent);
 
           // Emit real-time WS event to user's order room
-          io.to(`order:${orderId}`).emit('order:progress', {
+          io?.to(`order:${orderId}`).emit('order:progress', {
             orderId,
             delivered: sent,
             total,
@@ -124,7 +137,7 @@ export const createVideoDeliveryWorker = () => {
       });
 
       // Final WebSocket event
-      io.to(`order:${orderId}`).emit('order:status', {
+      io?.to(`order:${orderId}`).emit('order:status', {
         orderId,
         status: 'COMPLETED',
         delivered: sentCount,

@@ -1,6 +1,13 @@
 /**
- * Bot Seeder — run once to populate the bots table with all 6 categories
- * Usage: npx ts-node src/scripts/seed-bots.ts
+ * Bot Seeder — REQUIRED first-time setup
+ *
+ * Populates the `bots` table with all 6 category bots. The app cannot
+ * process orders without these rows (order creation looks up the bot
+ * by category). Safe to re-run — existing bots are skipped.
+ *
+ * Usage:
+ *   npm run seed:bots          (via package.json script)
+ *   npx ts-node src/scripts/seed-bots.ts   (direct)
  */
 import 'dotenv/config';
 import prisma from '../lib/prisma';

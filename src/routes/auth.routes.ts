@@ -25,6 +25,9 @@ router.post('/forgot-password/request', authController.requestPasswordReset);
 // Forgot Password Step 2: Verify OTP and set new password
 router.post('/forgot-password/reset', authController.resetPassword);
 
+// Refresh JWT token (authenticated users — call before token expires)
+router.post('/refresh-token', authenticate, authController.refreshToken);
+
 // Change password (authenticated users)
 router.post('/change-password', authenticate, authController.changePassword);
 

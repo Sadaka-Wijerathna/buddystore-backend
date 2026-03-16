@@ -17,6 +17,17 @@ export const initSocket = (httpServer: HttpServer): SocketIOServer => {
   io.on('connection', (socket: Socket) => {
     console.log(`[Socket] Client connected: ${socket.id}`);
 
+    // Admin joins the admin room to receive real-time new-order alerts
+    socket.on('join:admin', () => {
+      socket.join('admin');
+      console.log(`[Socket] Client ${socket.id} joined admin room`);
+    });
+
+    socket.on('leave:admin', () => {
+      socket.leave('admin');
+      console.log(`[Socket] Client ${socket.id} left admin room`);
+    });
+
     // User joins a specific order room to receive progress updates
     socket.on('join:order', (orderId: string) => {
       socket.join(`order:${orderId}`);

@@ -167,42 +167,71 @@ export const clearBotVideos = async (req: AuthRequest, res: Response): Promise<v
   }
 };
 
-// ─── Get all users ─────────────────────────────────────────────────────────
-export const getUsers = async (_req: AuthRequest, res: Response): Promise<void> => {
+// ─── Get all users (paginated) ─────────────────────────────────────────────────
+export const getUsers = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-        telegramUsername: true,
-        firstName: true,
-        lastName: true,
-        languageCode: true,
-        role: true,
-        createdAt: true,
-        _count: { select: { orders: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50));
+    const skip  = (page - 1) * limit;
 
-    res.json({ success: true, data: users });
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        select: {
+          id: true,
+          telegramUsername: true,
+          firstName: true,
+          lastName: true,
+          languageCode: true,
+          role: true,
+          createdAt: true,
+          _count: { select: { orders: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.user.count(),
+    ]);
+
+    res.json({ success: true, data: users, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
   } catch (error) {
     console.error('[getUsers]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// ─── Get all orders ────────────────────────────────────────────────────────
-export const getAllOrders = async (_req: AuthRequest, res: Response): Promise<void> => {
+// ─── Get all orders (paginated + filterable) ──────────────────────────────────────
+// Query params: ?page=1&limit=50&status=PENDING&category=MIXED
+export const getAllOrders = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const orders = await prisma.order.findMany({
-      include: {
-        user: {
-          select: { telegramUsername: true, firstName: true, lastName: true },
+    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50));
+    const skip  = (page - 1) * limit;
+
+    // Optional filters
+    const where: Record<string, unknown> = {};
+    if (req.query.status && typeof req.query.status === 'string') {
+      where.status = req.query.status;
+    }
+    if (req.query.category && typeof req.query.category === 'string') {
+      where.category = req.query.category;
+    }
+
+    const [orders, total] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        include: {
+          user: {
+            select: { telegramUsername: true, firstName: true, lastName: true },
+          },
+          _count: { select: { videoDeliveries: true } },
         },
-        _count: { select: { videoDeliveries: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.order.count({ where }),
+    ]);
 
     res.json({
       success: true,
@@ -219,6 +248,7 @@ export const getAllOrders = async (_req: AuthRequest, res: Response): Promise<vo
         createdAt: order.createdAt,
         confirmedAt: order.confirmedAt,
       })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (error) {
     console.error('[getAllOrders]', error);

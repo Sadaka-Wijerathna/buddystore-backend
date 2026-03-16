@@ -10,6 +10,7 @@ import adminRoutes from './routes/admin.routes';
 
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
+import { sanitizeInput } from './middleware/sanitize.middleware';
 
 const app = express();
 
@@ -20,6 +21,7 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(sanitizeInput);
 
 // ─── Static Files (payment receipts) ─────────────────────────────────────────
 app.use('/uploads', express.static(path.join(process.cwd(), config.uploadDir)));
