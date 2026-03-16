@@ -6,6 +6,7 @@ import { initSocket } from './lib/socket';
 import { createVideoDeliveryWorker } from './jobs/video.queue';
 import { startMainBot } from './bots/main.bot';
 import { startAllCategoryBots } from './bots/category.bot';
+import { startSpecialBot } from './bots/special.bot';
 import prisma from './lib/prisma';
 
 async function bootstrap() {
@@ -37,6 +38,7 @@ async function bootstrap() {
   }
 
   startAllCategoryBots();
+  startSpecialBot();
 
   // ─── Start HTTP Server ──────────────────────────────────────────────────────
   httpServer.listen(config.port, () => {
