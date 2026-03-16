@@ -493,9 +493,31 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
 export const deleteOrder = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    await prisma.videoDelivery.deleteMany({ where: { orderId: id as string } });
-    await prisma.order.delete({ where: { id: id as string } });
-    res.json({ success: true, message: 'Order deleted successfully.' });
+    
+    // The frontend passes either an order ID or a receiptUrl if it's a batch.
+    // We want to delete all orders that match either the direct ID or the receiptUrl
+    const ordersToDelete = await prisma.order.findMany({
+      where: {
+        OR: [{ id: id as string }, { receiptUrl: id as string }],
+      },
+      select: { id: true },
+    });
+
+    const orderIds = ordersToDelete.map(o => o.id);
+    if (orderIds.length === 0) {
+      res.status(404).json({ success: false, message: 'Order not found' });
+      return;
+    }
+
+    await prisma.videoDelivery.deleteMany({
+      where: { orderId: { in: orderIds } },
+    });
+    
+    await prisma.order.deleteMany({
+      where: { id: { in: orderIds } },
+    });
+
+    res.json({ success: true, message: 'Order(s) deleted successfully.' });
   } catch (error) {
     console.error('[deleteOrder]', error);
     res.status(500).json({ success: false, message: 'Server error' });
