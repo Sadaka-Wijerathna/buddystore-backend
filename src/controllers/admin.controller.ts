@@ -459,11 +459,12 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
     })).sort((a, b) => b.revenue - a.revenue);
 
     // Top stats
-    const confirmed = orders.filter(o => o.status !== 'REJECTED');
-    const totalRevenue = confirmed.reduce((s, o) => s + Number(o.priceAmount), 0);
-    const completed = orders.filter(o => o.status === 'COMPLETED').length;
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const weeklyOrders = orders.filter(o => new Date(o.createdAt) >= weekAgo).length;
+    const revenueOrders = orders.filter(o => ['CONFIRMED', 'DELIVERING', 'COMPLETED'].includes(o.status));
+    const activeOrders  = orders.filter(o => o.status !== 'REJECTED');
+    const totalRevenue  = revenueOrders.reduce((s, o) => s + Number(o.priceAmount), 0);
+    const completed     = orders.filter(o => o.status === 'COMPLETED').length;
+    const weekAgo       = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const weeklyOrders  = activeOrders.filter(o => new Date(o.createdAt) >= weekAgo).length;
 
     res.json({
       success: true,
@@ -473,9 +474,9 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
         categoryBreakdown,
         topStats: {
           totalRevenue,
-          totalOrders: orders.length,
-          avgOrderValue: confirmed.length ? Math.round(totalRevenue / confirmed.length) : 0,
-          completionRate: orders.length ? Math.round((completed / orders.length) * 100) : 0,
+          totalOrders: activeOrders.length,
+          avgOrderValue: revenueOrders.length ? Math.round(totalRevenue / revenueOrders.length) : 0,
+          completionRate: activeOrders.length ? Math.round((completed / activeOrders.length) * 100) : 0,
           weeklyOrders,
         },
       },
