@@ -214,6 +214,7 @@ export const getAllOrders = async (_req: AuthRequest, res: Response): Promise<vo
         delivered: order._count.videoDeliveries,
         percentComplete: Math.round((order._count.videoDeliveries / order.videoCount) * 100),
         status: order.status,
+        priceAmount: order.priceAmount,
         receiptUrl: order.receiptUrl,
         createdAt: order.createdAt,
         confirmedAt: order.confirmedAt,
