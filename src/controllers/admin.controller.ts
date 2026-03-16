@@ -488,6 +488,19 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
 };
 
 
+// ─── Delete a single order ───────────────────────────────────────────────────
+export const deleteOrder = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    await prisma.videoDelivery.deleteMany({ where: { orderId: id } });
+    await prisma.order.delete({ where: { id } });
+    res.json({ success: true, message: 'Order deleted successfully.' });
+  } catch (error) {
+    console.error('[deleteOrder]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 // ─── Delete all orders (admin test cleanup) ────────────────────────────────
 export const deleteAllOrders = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
