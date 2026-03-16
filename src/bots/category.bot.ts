@@ -258,6 +258,8 @@ export class CategoryBot {
       onStart: (info) => {
         console.log(`✅ ${this.name} started: @${info.username}`);
       },
+    }).catch((err: Error) => {
+      console.error(`❌ ${this.name}: Failed to start — ${err.message}. Check BOT token in environment variables.`);
     });
   }
 }

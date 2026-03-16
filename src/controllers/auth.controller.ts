@@ -394,3 +394,43 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+// ─── Change Password (authenticated) ──────────────────────────────────────────
+import { AuthRequest } from '../middleware/auth.middleware';
+
+export const changePassword = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ success: false, message: 'Current and new password are required' });
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    const isCorrect = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!isCorrect) {
+      res.status(401).json({ success: false, message: 'Current password is incorrect' });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+
+    res.json({ success: true, message: 'Password updated successfully!' });
+  } catch (error) {
+    console.error('[changePassword]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+

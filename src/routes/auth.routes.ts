@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as authController from '../controllers/auth.controller';
+import { authenticate } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -23,6 +24,9 @@ router.post('/forgot-password/request', authController.requestPasswordReset);
 
 // Forgot Password Step 2: Verify OTP and set new password
 router.post('/forgot-password/reset', authController.resetPassword);
+
+// Change password (authenticated users)
+router.post('/change-password', authenticate, authController.changePassword);
 
 export default router;
 
