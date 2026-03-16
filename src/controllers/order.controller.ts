@@ -6,6 +6,53 @@ import { uploadReceipt } from '../lib/cloudinary';
 
 const VALID_CATEGORIES: Category[] = ['MIXED', 'MOM_SON', 'SRI_LANKAN', 'CCTV', 'PUBLIC', 'RAPE'];
 
+// ─── Get Category Limits ──────────────────────────────────────────────────────
+export const getCategoryLimits = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { category } = req.query;
+
+    if (!category || !VALID_CATEGORIES.includes(category as Category)) {
+      res.status(400).json({ success: false, message: 'Valid category is required' });
+      return;
+    }
+
+    const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
+    if (!bot) {
+      res.status(404).json({ success: false, message: 'No bot configured for this category' });
+      return;
+    }
+
+    const availableVideos = await prisma.videos.count({
+      where: {
+        category: category as Category,
+        videoDeliveries: { none: { userId } },
+      },
+    });
+
+    const alreadyReceived = await prisma.videoDelivery.count({
+      where: {
+        userId,
+        video: { category: category as Category },
+      },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        available: availableVideos,
+        min: bot.minVideoCount,
+        max: availableVideos,
+        totalInBot: bot.totalVideos,
+        alreadyReceived,
+      },
+    });
+  } catch (error) {
+    console.error('[getCategoryLimits]', error);
+    res.status(500).json({ success: false, message: 'Server error fetching category limits' });
+  }
+};
+
 // ─── Create Single Order ──────────────────────────────────────────────────────
 export const createOrder = async (req: AuthRequest, res: Response): Promise<void> => {
   try {

@@ -79,6 +79,7 @@ model Bot {
   category       Category    @unique
   collectionMode Boolean     @default(false)
   totalVideos    Int         @default(0)
+  minVideoCount  Int         @default(10)
   startedUserIds String[]    @default([])   // Telegram user IDs that started this bot
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt

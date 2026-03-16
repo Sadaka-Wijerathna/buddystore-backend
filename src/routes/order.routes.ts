@@ -12,6 +12,9 @@ router.use(authenticate);
 // Notifications derived from order history
 router.get('/notifications', getNotifications);
 
+// Get available, min, and max video limits for a category
+router.get('/category-limits', orderController.getCategoryLimits);
+
 // Token-based bot verification (register-page pattern)
 router.post('/bot-verify-tokens', orderController.createBotVerifyTokens);
 router.get('/bot-verify-tokens', orderController.pollBotVerifyTokens);
