@@ -588,8 +588,6 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
         title: c.title,
         description: c.description,
         banner: c.banner,
-        trendingTag: c.trendingTag,
-        isTrending: c.isTrending,
         collectionMode: c.collectionMode,
         totalVideos: c._count.videos,
         createdAt: c.createdAt,
@@ -625,7 +623,12 @@ export const createSpecialCollection = async (req: AuthRequest, res: Response): 
     }
 
     const collection = await prisma.specialCollection.create({
-      data: { slug, title, description, banner: bannerUrl, trendingTag: trendingTag || 'Trending' },
+      data: {
+        slug,
+        title,
+        description,
+        banner: bannerUrl,
+      },
     });
 
     res.status(201).json({ success: true, data: collection });
@@ -657,28 +660,6 @@ export const toggleSpecialCollectionMode = async (req: AuthRequest, res: Respons
     });
   } catch (error) {
     console.error('[toggleSpecialCollectionMode]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
-
-// PATCH /admin/special-collections/:id/trending  { enabled }
-export const toggleSpecialCollectionTrending = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    const { enabled } = req.body;
-
-    const collection = await prisma.specialCollection.update({
-      where: { id },
-      data: { isTrending: Boolean(enabled) },
-    });
-
-    res.json({
-      success: true,
-      message: `Trending status ${collection.isTrending ? 'enabled' : 'disabled'} for "${collection.title}"`,
-      data: { id: collection.id, isTrending: collection.isTrending },
-    });
-  } catch (error) {
-    console.error('[toggleSpecialCollectionTrending]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };

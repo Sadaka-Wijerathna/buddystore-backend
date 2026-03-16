@@ -192,8 +192,6 @@ model SpecialCollection {
   title          String             // e.g. "Anu Kanu"
   description    String?
   banner         String?            // URL (uploaded manually to admin)
-  trendingTag    String   @default("Trending")
-  isTrending     Boolean  @default(false)
   collectionMode Boolean  @default(false)  // When ON, admin can upload videos
   totalVideos    Int      @default(0)
   createdAt      DateTime @default(now())
