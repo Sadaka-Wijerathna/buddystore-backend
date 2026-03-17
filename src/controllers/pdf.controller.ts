@@ -185,8 +185,8 @@ export const deletePdfSubCategory = async (req: AuthRequest, res: Response): Pro
 
 export const getAdminPdfSeries = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { subcategoryId } = req.query;
-    const where = subcategoryId ? { subcategoryId: String(subcategoryId) } : {};
+    const subcategoryId = req.query.subcategoryId ? String(req.query.subcategoryId) : undefined;
+    const where: { subcategoryId?: string } = subcategoryId ? { subcategoryId } : {};
     const series = await prisma.pdfSeries.findMany({
       where,
       orderBy: { createdAt: 'asc' },
@@ -253,13 +253,13 @@ export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<
 
 export const getAdminPdfs = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { seriesId } = req.query;
+    const seriesId = req.query.seriesId ? String(req.query.seriesId) : undefined;
     if (!seriesId) {
       res.status(400).json({ success: false, message: 'seriesId is required' });
       return;
     }
     const pdfs = await prisma.freePdf.findMany({
-      where: { seriesId: String(seriesId) },
+      where: { seriesId },
       orderBy: { order: 'asc' },
     });
     res.json({ success: true, data: pdfs });
