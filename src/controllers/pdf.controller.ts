@@ -16,6 +16,27 @@ function extractCloudinaryPublicId(url: string): string {
   return match ? match[1] : '';
 }
 
+/**
+ * Destroy one or more Cloudinary assets (best-effort, errors are logged not thrown).
+ * resource_type: 'raw' for PDFs, 'image' for banners.
+ */
+async function destroyCloudinaryAssets(
+  urls: (string | null | undefined)[],
+  resource_type: 'raw' | 'image'
+): Promise<void> {
+  const ids = urls
+    .filter((u): u is string => !!u)
+    .map(extractCloudinaryPublicId)
+    .filter(Boolean);
+  await Promise.all(
+    ids.map((publicId) =>
+      cloudinaryLib.uploader
+        .destroy(publicId, { resource_type, invalidate: true })
+        .catch((err) => console.error('[cloudinary.destroy]', resource_type, publicId, err))
+    )
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -220,9 +241,20 @@ export const deletePdfCategory = async (req: AuthRequest, res: Response): Promis
       res.status(400).json({ success: false, message: 'Invalid category ID' });
       return;
     }
+    // Collect all Cloudinary assets under this category before cascade-delete
+    const seriesUnder = await prisma.pdfSeries.findMany({
+      where: { subcategory: { category: { id } } },
+      include: { pdfs: { select: { fileUrl: true } } },
+    });
     await prisma.pdfCategory.delete({ where: { id } });
     res.json({ success: true, message: 'Category deleted' });
+    // Fire-and-forget Cloudinary cleanup
+    const banners = seriesUnder.map((s) => s.bannerUrl);
+    const pdfUrls = seriesUnder.flatMap((s) => s.pdfs.map((p) => p.fileUrl));
+    await destroyCloudinaryAssets(banners, 'image');
+    await destroyCloudinaryAssets(pdfUrls, 'raw');
   } catch (error) {
+    console.error('[deletePdfCategory]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -258,9 +290,20 @@ export const deletePdfSubCategory = async (req: AuthRequest, res: Response): Pro
       res.status(400).json({ success: false, message: 'Invalid subcategory ID' });
       return;
     }
+    // Collect all Cloudinary assets under this subcategory before cascade-delete
+    const seriesUnder = await prisma.pdfSeries.findMany({
+      where: { subcategoryId: id },
+      include: { pdfs: { select: { fileUrl: true } } },
+    });
     await prisma.pdfSubCategory.delete({ where: { id } });
     res.json({ success: true, message: 'Subcategory deleted' });
+    // Fire-and-forget Cloudinary cleanup
+    const banners = seriesUnder.map((s) => s.bannerUrl);
+    const pdfUrls = seriesUnder.flatMap((s) => s.pdfs.map((p) => p.fileUrl));
+    await destroyCloudinaryAssets(banners, 'image');
+    await destroyCloudinaryAssets(pdfUrls, 'raw');
   } catch (error) {
+    console.error('[deletePdfSubCategory]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -331,9 +374,20 @@ export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<
       res.status(400).json({ success: false, message: 'Invalid series ID' });
       return;
     }
+    // Collect Cloudinary assets before cascade-delete
+    const series = await prisma.pdfSeries.findUnique({
+      where: { id },
+      include: { pdfs: { select: { fileUrl: true } } },
+    });
     await prisma.pdfSeries.delete({ where: { id } });
     res.json({ success: true, message: 'Series deleted' });
+    // Fire-and-forget Cloudinary cleanup
+    if (series) {
+      await destroyCloudinaryAssets([series.bannerUrl], 'image');
+      await destroyCloudinaryAssets(series.pdfs.map((p) => p.fileUrl), 'raw');
+    }
   } catch (error) {
+    console.error('[deletePdfSeries]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -430,9 +484,13 @@ export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<vo
       res.status(400).json({ success: false, message: 'Invalid PDF ID' });
       return;
     }
+    const pdf = await prisma.freePdf.findUnique({ where: { id }, select: { fileUrl: true } });
     await prisma.freePdf.delete({ where: { id } });
     res.json({ success: true, message: 'PDF deleted' });
+    // Fire-and-forget Cloudinary cleanup
+    if (pdf) await destroyCloudinaryAssets([pdf.fileUrl], 'raw');
   } catch (error) {
+    console.error('[deleteFreePdf]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 }
