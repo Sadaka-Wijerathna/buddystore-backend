@@ -139,7 +139,7 @@ export const createPdfCategory = async (req: AuthRequest, res: Response): Promis
 
 export const deletePdfCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.pdfCategory.delete({ where: { id: req.params.id } });
+    await prisma.pdfCategory.delete({ where: { id: String(req.params.id) } });
     res.json({ success: true, message: 'Category deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -172,7 +172,7 @@ export const createPdfSubCategory = async (req: AuthRequest, res: Response): Pro
 
 export const deletePdfSubCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.pdfSubCategory.delete({ where: { id: req.params.id } });
+    await prisma.pdfSubCategory.delete({ where: { id: String(req.params.id) } });
     res.json({ success: true, message: 'Subcategory deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -240,7 +240,7 @@ export const createPdfSeries = async (req: AuthRequest, res: Response): Promise<
 
 export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.pdfSeries.delete({ where: { id: req.params.id } });
+    await prisma.pdfSeries.delete({ where: { id: String(req.params.id) } });
     res.json({ success: true, message: 'Series deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -333,7 +333,7 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
 
 export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.freePdf.delete({ where: { id: req.params.id } });
+    await prisma.freePdf.delete({ where: { id: String(req.params.id) } });
     res.json({ success: true, message: 'PDF deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
