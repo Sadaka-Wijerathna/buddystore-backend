@@ -98,25 +98,25 @@ export const downloadFreePdf = async (req: Request, res: Response): Promise<void
     // bypassing delivery restrictions / 'Blocked for delivery' on assets.
     const publicId = extractCloudinaryPublicId(pdf.fileUrl);
     let fetchUrl = pdf.fileUrl;
+
     if (publicId) {
-      // For raw resources, public_id INCLUDES the file extension (e.g. file.pdf).
-      // private_download_url would append format as another extension → double .pdf → 404.
-      // Strip the extension here and pass it as the format argument instead.
-      const ext = publicId.match(/\.([^.]+)$/)?.[1] ?? 'pdf';
-      const publicIdNoExt = publicId.replace(/\.[^.]+$/, '');
-      fetchUrl = cloudinaryLib.utils.private_download_url(publicIdNoExt, ext, {
+      // Generate a signed CDN delivery URL (sign_url=true adds a signature that
+      // bypasses per-asset access restrictions, but still requires account-level
+      // raw delivery to be enabled in Cloudinary Settings > Security).
+      fetchUrl = cloudinaryLib.url(publicId, {
         resource_type: 'raw',
-        expires_at: Math.floor(Date.now() / 1000) + 300,  // 5-min validity
-        attachment: false, // we handle Content-Disposition ourselves
+        type: 'upload',
+        sign_url: true,
+        secure: true,
       });
     }
 
-    // Stream from the signed URL to the client
+    // Stream from the (signed) Cloudinary URL to the client
     const parsedUrl = new URL(fetchUrl);
     const transport = parsedUrl.protocol === 'https:' ? https : http;
     transport.get(fetchUrl, (upstream) => {
       if (upstream.statusCode && upstream.statusCode >= 400) {
-        console.error('[downloadFreePdf] upstream status', upstream.statusCode, fetchUrl);
+        console.error('[downloadFreePdf] upstream status', upstream.statusCode, 'for publicId:', publicId);
         if (!res.headersSent) res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
         return;
       }
