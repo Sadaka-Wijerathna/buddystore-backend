@@ -333,6 +333,7 @@ export const getAdminPdfSeries = async (req: AuthRequest, res: Response): Promis
         description: s.description,
         bannerUrl: s.bannerUrl,
         pdfCount: s._count.pdfs,
+        subcategoryId: s.subcategoryId,
         subcategory: s.subcategory,
         updatedAt: s.updatedAt,
       })),
@@ -356,6 +357,7 @@ export const createPdfSeries = async (req: AuthRequest, res: Response): Promise<
     }
     const series = await prisma.pdfSeries.create({
       data: { slug, title, description, subcategoryId, bannerUrl },
+      include: { subcategory: { select: { title: true, slug: true } } },
     });
     res.status(201).json({ success: true, data: { ...series, pdfCount: 0 } });
   } catch (error: any) {
