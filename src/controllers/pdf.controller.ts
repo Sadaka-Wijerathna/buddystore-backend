@@ -322,8 +322,8 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
         // Use title from parsedTitles, or the 'title' field (for single), or filename
         const currentTitle = parsedTitles[i] || title || file.originalname.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim();
 
-        const safeTitle = currentTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-        const filename = `pdf-${seriesId}-${safeTitle}-${Date.now()}-${i}`;
+        const safeTitle = currentTitle.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
+        const filename = `${seriesId}/${safeTitle}_${Date.now().toString().slice(-6)}_${i}`;
         const fileUrl = await uploadPdf(file.buffer, filename);
         
         const bytes = file.size;
