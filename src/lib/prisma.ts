@@ -2,9 +2,12 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
 function createPrismaClient() {
-  // Use the standard Prisma TCP connection pool 
-  // This bypasses entirely the @prisma/adapter-neon missing dependencies on Railway
-  return new PrismaClient();
+  // In Prisma v7, the `url` field is no longer allowed in schema.prisma.
+  // The datasource URL must be passed directly to the PrismaClient constructor
+  // at runtime via `datasourceUrl`. prisma.config.ts handles the CLI (migrations).
+  return new PrismaClient({
+    datasourceUrl: process.env.DATABASE_URL,
+  });
 }
 
 const globalForPrisma = globalThis as unknown as {
