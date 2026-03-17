@@ -58,6 +58,8 @@ export const uploadPdf = (buffer: Buffer, filename: string): Promise<string> => 
         folder: 'buddystore/pdfs',
         public_id: filename,
         resource_type: 'raw',
+        type: 'upload',        // explicit: public delivery type
+        access_mode: 'public', // never block delivery
       },
       (error, result) => {
         if (error || !result) return reject(error ?? new Error('Upload failed'));

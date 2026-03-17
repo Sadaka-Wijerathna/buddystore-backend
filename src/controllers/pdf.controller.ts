@@ -4,6 +4,17 @@ import http from 'http';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
+import cloudinaryLib from '../lib/cloudinary';
+
+/**
+ * Extract the Cloudinary public_id (including extension for raw files)
+ * from a secure_url like:
+ * https://res.cloudinary.com/CLOUD/raw/upload/v123/buddystore/pdfs/....pdf
+ */
+function extractCloudinaryPublicId(url: string): string {
+  const match = url.match(/\/(?:raw|image|video)\/upload\/(?:v\d+\/)?(.+)$/);
+  return match ? match[1] : '';
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC ENDPOINTS
@@ -82,16 +93,31 @@ export const downloadFreePdf = async (req: Request, res: Response): Promise<void
     );
     res.setHeader('Cache-Control', 'no-cache');
 
-    // Stream from Cloudinary
-    const url = new URL(pdf.fileUrl);
-    const transport = url.protocol === 'https:' ? https : http;
-    transport.get(pdf.fileUrl, (upstream) => {
+    // Build a signed Cloudinary API download URL.
+    // private_download_url hits api.cloudinary.com (authenticated),
+    // bypassing delivery restrictions / 'Blocked for delivery' on assets.
+    const publicId = extractCloudinaryPublicId(pdf.fileUrl);
+    let fetchUrl = pdf.fileUrl;
+    if (publicId) {
+      fetchUrl = cloudinaryLib.utils.private_download_url(publicId, 'pdf', {
+        resource_type: 'raw',
+        expires_at: Math.floor(Date.now() / 1000) + 300,  // 5-min validity
+        attachment: false, // we handle Content-Disposition ourselves
+      });
+    }
+
+    // Stream from the signed URL to the client
+    const parsedUrl = new URL(fetchUrl);
+    const transport = parsedUrl.protocol === 'https:' ? https : http;
+    transport.get(fetchUrl, (upstream) => {
       if (upstream.statusCode && upstream.statusCode >= 400) {
-        res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+        console.error('[downloadFreePdf] upstream status', upstream.statusCode, fetchUrl);
+        if (!res.headersSent) res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
         return;
       }
       upstream.pipe(res);
-    }).on('error', () => {
+    }).on('error', (err) => {
+      console.error('[downloadFreePdf] stream error', err);
       if (!res.headersSent) {
         res.status(502).json({ success: false, message: 'Failed to stream PDF' });
       }
