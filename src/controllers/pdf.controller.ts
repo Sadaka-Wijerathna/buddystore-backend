@@ -2,8 +2,6 @@ import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
-import https from 'https';
-import http from 'http';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC ENDPOINTS
@@ -324,9 +322,10 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
         // Use title from parsedTitles, or the 'title' field (for single), or filename
         const currentTitle = parsedTitles[i] || title || file.originalname.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim();
 
-        // Use a generic public_id for the URL, but pass the real title for the download name
-        const filename = `${seriesId}/pdf_${Date.now().toString().slice(-6)}_${i}.pdf`;
-        const fileUrl = await uploadPdf(file.buffer, filename, currentTitle);
+        // Standard direct public_id logic
+        const safeTitle = currentTitle.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 50);
+        const filename = `buddystore/pdfs/${seriesId}/${safeTitle}_${Date.now()}`;
+        const fileUrl = await uploadPdf(file.buffer, filename);
         
         const bytes = file.size;
         const fileSize = bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
@@ -337,7 +336,6 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
         results.push(pdf);
     }
 
-    // Return single item for single upload, array for bulk
     res.status(201).json({ 
         success: true, 
         data: results.length === 1 ? results[0] : results 
@@ -359,92 +357,5 @@ export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<vo
     res.json({ success: true, message: 'PDF deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
-  }
-}
-
-// GET /api/v1/public/pdf-download/:id
-// Simple redirect approach - let Cloudinary handle the file serving
-export const downloadPdf = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { id } = req.params;
-    if (!id || typeof id !== 'string') {
-      res.status(400).json({ success: false, message: 'Invalid PDF ID' });
-      return;
-    }
-
-    // Fetch the PDF record to get the title and fileUrl
-    const pdf = await prisma.freePdf.findUnique({ where: { id } });
-    if (!pdf) {
-      res.status(404).json({ success: false, message: 'PDF not found' });
-      return;
-    }
-
-    // Sanitize the title for use as a filename
-    const safeFilename = pdf.title
-      .replace(/[/\\?%*:|"<>]/g, '-')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const downloadFilename = `${safeFilename}.pdf`;
-
-    console.log(`[downloadPdf] Downloading: ${pdf.title} from ${pdf.fileUrl}`);
-
-    // Set headers for download (RFC 5987 for Sinhala)
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
-    res.setHeader('Cache-Control', 'no-cache');
-
-    // Helper to follow redirects (Cloudinary uses them)
-    const MAX_REDIRECTS = 5;
-    const fetchWithRedirects = (currentUrl: string, redirectsRemaining: number) => {
-      const protocol = currentUrl.startsWith('https') ? https : http;
-      
-      const request = protocol.get(currentUrl, {
-        headers: { 'User-Agent': 'BuddyStore-Backend/1.0' }
-      }, (proxyRes) => {
-        // Handle Redirects
-        if ([301, 302, 307, 308].includes(proxyRes.statusCode || 0) && proxyRes.headers.location) {
-          if (redirectsRemaining <= 0) {
-            console.error('[downloadPdf] Too many redirects');
-            if (!res.headersSent) res.status(502).json({ success: false, message: 'Too many redirects' });
-            return;
-          }
-          console.log(`[downloadPdf] Following redirect to: ${proxyRes.headers.location}`);
-          fetchWithRedirects(proxyRes.headers.location, redirectsRemaining - 1);
-          return;
-        }
-
-        // Handle Errors
-        if (proxyRes.statusCode !== 200) {
-          console.error(`[downloadPdf] Cloudinary returned status ${proxyRes.statusCode}`);
-          if (!res.headersSent) res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
-          return;
-        }
-
-        // Set content length if available
-        if (proxyRes.headers['content-length']) {
-          res.setHeader('Content-Length', proxyRes.headers['content-length']);
-        }
-
-        // Pipe the response from Cloudinary to the client
-        proxyRes.pipe(res);
-
-        proxyRes.on('error', (err) => {
-          console.error('[downloadPdf] Proxy stream error:', err);
-          if (!res.headersSent) res.status(502).json({ success: false, message: 'Stream error' });
-        });
-      });
-
-      request.on('error', (error) => {
-        console.error('[downloadPdf] HTTP request error:', error);
-        if (!res.headersSent) res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
-      });
-    };
-
-    fetchWithRedirects(pdf.fileUrl, MAX_REDIRECTS);
-  } catch (error: any) {
-    console.error('[downloadPdf] Exception:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, message: 'Server error', debug: error.message });
-    }
   }
 }
