@@ -139,7 +139,12 @@ export const createPdfCategory = async (req: AuthRequest, res: Response): Promis
 
 export const deletePdfCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.pdfCategory.delete({ where: { id: String(req.params.id) } });
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ success: false, message: 'Invalid category ID' });
+      return;
+    }
+    await prisma.pdfCategory.delete({ where: { id } });
     res.json({ success: true, message: 'Category deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -172,7 +177,12 @@ export const createPdfSubCategory = async (req: AuthRequest, res: Response): Pro
 
 export const deletePdfSubCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.pdfSubCategory.delete({ where: { id: String(req.params.id) } });
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ success: false, message: 'Invalid subcategory ID' });
+      return;
+    }
+    await prisma.pdfSubCategory.delete({ where: { id } });
     res.json({ success: true, message: 'Subcategory deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -240,7 +250,12 @@ export const createPdfSeries = async (req: AuthRequest, res: Response): Promise<
 
 export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.pdfSeries.delete({ where: { id: String(req.params.id) } });
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ success: false, message: 'Invalid series ID' });
+      return;
+    }
+    await prisma.pdfSeries.delete({ where: { id } });
     res.json({ success: true, message: 'Series deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -333,7 +348,12 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
 
 export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    await prisma.freePdf.delete({ where: { id: String(req.params.id) } });
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ success: false, message: 'Invalid PDF ID' });
+      return;
+    }
+    await prisma.freePdf.delete({ where: { id } });
     res.json({ success: true, message: 'PDF deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error' });
