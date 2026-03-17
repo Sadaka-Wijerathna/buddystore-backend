@@ -400,6 +400,84 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
   }
 };
 
+// POST /api/v1/admin/pdfs/bulk  (multipart: seriesId, order?, files[])
+export const bulkUploadFreePdfs = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { seriesId, order } = req.body as {
+      seriesId: string; order?: string;
+    };
+
+    if (!seriesId) {
+      res.status(400).json({ success: false, message: 'seriesId is required' });
+      return;
+    }
+
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) {
+      res.status(400).json({ success: false, message: 'No PDF files provided' });
+      return;
+    }
+
+    // Determine initial order: if not provided, append after last
+    let currentOrder = 0;
+    if (order !== undefined && order !== '') {
+      currentOrder = parseInt(order, 10) || 0;
+    } else {
+      const last = await prisma.freePdf.findFirst({
+        where: { seriesId },
+        orderBy: { order: 'desc' },
+        select: { order: true },
+      });
+      currentOrder = (last?.order ?? -1) + 1;
+    }
+
+    const createdPdfs = [];
+
+    for (const file of files) {
+      if (file.mimetype !== 'application/pdf') continue;
+
+      // Extract title from filename (remove .pdf, replace _/- with spaces)
+      let title = file.originalname.replace(/\.[^/.]+$/, "");
+      title = title.replace(/[_-]/g, " ").trim();
+
+      // Calculate file size string
+      const bytes = file.size;
+      let fileSize: string;
+      if (bytes >= 1024 * 1024) {
+        fileSize = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      } else {
+        fileSize = `${Math.round(bytes / 1024)} KB`;
+      }
+
+      // Upload to Cloudinary
+      const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+      const cloudinaryFilename = `pdf-${seriesId}-${safeTitle}-${Date.now()}`;
+      const fileUrl = await uploadPdf(file.buffer, cloudinaryFilename);
+
+      const pdf = await prisma.freePdf.create({
+        data: {
+          title,
+          fileUrl,
+          fileSize,
+          seriesId,
+          order: currentOrder++,
+        },
+      });
+
+      createdPdfs.push(pdf);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Successfully uploaded ${createdPdfs.length} PDFs`,
+      data: createdPdfs,
+    });
+  } catch (error) {
+    console.error('[bulkUploadFreePdfs]', error);
+    res.status(500).json({ success: false, message: 'Server error during bulk upload' });
+  }
+};
+
 // DELETE /api/v1/admin/pdfs/:id
 export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
