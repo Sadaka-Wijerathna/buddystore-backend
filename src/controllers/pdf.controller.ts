@@ -392,6 +392,36 @@ export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<
   }
 };
 
+export const updatePdfSeriesBanner = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ success: false, message: 'Invalid series ID' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ success: false, message: 'A banner image file is required' });
+      return;
+    }
+    // Get existing banner URL to delete from Cloudinary
+    const existing = await prisma.pdfSeries.findUnique({ where: { id }, select: { slug: true, bannerUrl: true } });
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Series not found' });
+      return;
+    }
+    // Upload new banner
+    const filename = `pdf-series-${existing.slug}-${Date.now()}`;
+    const bannerUrl = await uploadBanner(req.file.buffer, filename);
+    const updated = await prisma.pdfSeries.update({ where: { id }, data: { bannerUrl } });
+    res.json({ success: true, data: { bannerUrl: updated.bannerUrl } });
+    // Delete old banner from Cloudinary (fire-and-forget)
+    if (existing.bannerUrl) await destroyCloudinaryAssets([existing.bannerUrl], 'image');
+  } catch (error) {
+    console.error('[updatePdfSeriesBanner]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ADMIN ENDPOINTS — PDFs
 // ═══════════════════════════════════════════════════════════════════════════════

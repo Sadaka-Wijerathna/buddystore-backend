@@ -20,6 +20,7 @@ router.delete('/pdf-subcategories/:id', pdfController.deletePdfSubCategory);
 // Series
 router.get('/pdf-series', pdfController.getAdminPdfSeries);
 router.post('/pdf-series', upload.single('banner'), pdfController.createPdfSeries);
+router.patch('/pdf-series/:id/banner', upload.single('banner'), pdfController.updatePdfSeriesBanner);
 router.delete('/pdf-series/:id', pdfController.deletePdfSeries);
 
 // PDFs
