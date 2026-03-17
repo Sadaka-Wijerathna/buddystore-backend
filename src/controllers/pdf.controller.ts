@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+﻿import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
@@ -340,60 +340,94 @@ export const getAdminPdfs = async (req: AuthRequest, res: Response): Promise<voi
   }
 };
 
-// POST /api/v1/admin/pdfs  (multipart: title, seriesId, order?, file)
+// POST /api/v1/admin/pdfs  (multipart: titles (JSON array), seriesId, files[])
+// Supports both single and bulk upload. titles[i] maps to files[i].
 export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { title, seriesId, order } = req.body as {
-      title: string; seriesId: string; order?: string;
-    };
+    const { seriesId } = req.body as { seriesId: string };
 
-    if (!title || !seriesId) {
-      res.status(400).json({ success: false, message: 'title and seriesId are required' });
+    if (!seriesId) {
+      res.status(400).json({ success: false, message: 'seriesId is required' });
       return;
     }
 
-    if (!req.file) {
-      res.status(400).json({ success: false, message: 'PDF file is required' });
+    // Support both upload.array (req.files) and legacy upload.single (req.file)
+    const files: Express.Multer.File[] = Array.isArray(req.files)
+      ? (req.files as Express.Multer.File[])
+      : req.file
+        ? [req.file]
+        : [];
+
+    if (files.length === 0) {
+      res.status(400).json({ success: false, message: 'At least one PDF file is required' });
       return;
     }
 
-    if (req.file.mimetype !== 'application/pdf') {
-      res.status(400).json({ success: false, message: 'Only PDF files are allowed' });
-      return;
-    }
-
-    // Calculate file size string
-    const bytes = req.file.size;
-    let fileSize: string;
-    if (bytes >= 1024 * 1024) {
-      fileSize = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    // Parse titles - can be a JSON array string, a repeated field array, or a single string
+    const titlesRaw: string | string[] = req.body.titles ?? req.body.title ?? '';
+    let titles: string[];
+    if (Array.isArray(titlesRaw)) {
+      titles = titlesRaw;
     } else {
-      fileSize = `${Math.round(bytes / 1024)} KB`;
+      try {
+        const parsed = JSON.parse(titlesRaw as string);
+        titles = Array.isArray(parsed) ? parsed : [String(parsed)];
+      } catch {
+        titles = [String(titlesRaw)];
+      }
     }
 
-    // Upload to Cloudinary
-    const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-    const filename = `pdf-${seriesId}-${safeTitle}-${Date.now()}`;
-    const fileUrl = await uploadPdf(req.file.buffer, filename);
-
-    // Determine order: if not provided, append after last
-    let pdfOrder = 0;
-    if (order !== undefined && order !== '') {
-      pdfOrder = parseInt(order, 10) || 0;
-    } else {
-      const last = await prisma.freePdf.findFirst({
-        where: { seriesId },
-        orderBy: { order: 'desc' },
-        select: { order: true },
-      });
-      pdfOrder = (last?.order ?? -1) + 1;
+    // Validate all files are PDFs
+    for (const file of files) {
+      if (file.mimetype !== 'application/pdf') {
+        res.status(400).json({ success: false, message: `File "${file.originalname}" is not a PDF` });
+        return;
+      }
     }
 
-    const pdf = await prisma.freePdf.create({
-      data: { title, fileUrl, fileSize, seriesId, order: pdfOrder },
+    // Get current max order to append after
+    const last = await prisma.freePdf.findFirst({
+      where: { seriesId },
+      orderBy: { order: 'desc' },
+      select: { order: true },
     });
+    let nextOrder = (last?.order ?? -1) + 1;
 
-    res.status(201).json({ success: true, data: pdf });
+    // Upload each file
+    const results = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // Use provided title or fall back to filename (without .pdf extension)
+      const title = (titles[i] ?? '').trim() ||
+        file.originalname.replace(/\.pdf$/i, '').replace(/_/g, ' ').trim();
+
+      // Calculate file size string
+      const bytes = file.size;
+      let fileSize: string;
+      if (bytes >= 1024 * 1024) {
+        fileSize = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      } else {
+        fileSize = `${Math.round(bytes / 1024)} KB`;
+      }
+
+      // Upload to Cloudinary
+      const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+      const filename = `pdf-${seriesId}-${safeTitle}-${Date.now()}-${i}`;
+      const fileUrl = await uploadPdf(file.buffer, filename);
+
+      const pdf = await prisma.freePdf.create({
+        data: { title, fileUrl, fileSize, seriesId, order: nextOrder++ },
+      });
+
+      results.push(pdf);
+    }
+
+    // Return single item for single upload (backward compat), array for bulk
+    if (results.length === 1) {
+      res.status(201).json({ success: true, data: results[0] });
+    } else {
+      res.status(201).json({ success: true, data: results });
+    }
   } catch (error) {
     console.error('[uploadFreePdf]', error);
     res.status(500).json({ success: false, message: 'Server error' });
