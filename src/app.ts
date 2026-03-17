@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.routes';
 import orderRoutes from './routes/order.routes';
 import adminRoutes from './routes/admin.routes';
 import publicRoutes from './routes/public.routes';
+import pdfAdminRoutes from './routes/pdf.routes';
 
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
@@ -36,6 +37,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/admin', pdfAdminRoutes);
 app.use('/api/v1/public', publicRoutes);
 
 // ─── Error Handling ────────────────────────────────────────────────────────────

@@ -47,4 +47,25 @@ export const uploadBanner = (buffer: Buffer, filename: string): Promise<string> 
   });
 };
 
+/**
+ * Upload a PDF buffer to Cloudinary and return the secure URL.
+ * Uses resource_type: 'raw' which is required for non-image files like PDFs.
+ */
+export const uploadPdf = (buffer: Buffer, filename: string): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'buddystore/pdfs',
+        public_id: filename,
+        resource_type: 'raw',
+      },
+      (error, result) => {
+        if (error || !result) return reject(error ?? new Error('Upload failed'));
+        resolve(result.secure_url);
+      }
+    );
+    Readable.from(buffer).pipe(stream);
+  });
+};
+
 export default cloudinary;

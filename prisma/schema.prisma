@@ -186,6 +186,64 @@ model VideoDelivery {
 // ─────────────────────────────────────────
 // Special Bot — Free video collections delivered via deep link
 // ─────────────────────────────────────────
+// ─────────────────────────────────────────
+// Free PDFs
+// ─────────────────────────────────────────
+
+model PdfCategory {
+  id            String           @id @default(uuid())
+  slug          String           @unique  // "stories", "comics"
+  title         String
+  order         Int              @default(0)
+  createdAt     DateTime         @default(now())
+
+  subcategories PdfSubCategory[]
+
+  @@map("pdf_categories")
+}
+
+model PdfSubCategory {
+  id         String      @id @default(uuid())
+  slug       String      @unique  // "expert", "mother_son", etc.
+  title      String
+  order      Int         @default(0)
+  categoryId String
+  category   PdfCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  series PdfSeries[]
+
+  @@map("pdf_subcategories")
+}
+
+model PdfSeries {
+  id            String         @id @default(uuid())
+  slug          String         @unique  // "janeleyen", "mayavi"
+  title         String
+  description   String?
+  bannerUrl     String?        // Cloudinary URL
+  subcategoryId String
+  subcategory   PdfSubCategory @relation(fields: [subcategoryId], references: [id], onDelete: Cascade)
+  pdfs          FreePdf[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("pdf_series")
+}
+
+model FreePdf {
+  id        String    @id @default(uuid())
+  title     String
+  fileUrl   String    // Cloudinary raw URL
+  fileSize  String?   // e.g. "345 KB"
+  order     Int       @default(0)  // for sorting within a series
+  seriesId  String
+  series    PdfSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+
+  @@map("free_pdfs")
+}
+
+// ─────────────────────────────────────────
 model SpecialCollection {
   id             String   @id @default(uuid())
   slug           String   @unique   // e.g. "anu_kanu" — used in deep link
