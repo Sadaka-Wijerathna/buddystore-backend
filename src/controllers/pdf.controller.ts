@@ -386,43 +386,65 @@ export const downloadPdf = async (req: Request, res: Response): Promise<void> =>
       .trim();
     const downloadFilename = `${safeFilename}.pdf`;
 
-    console.log(`[downloadPdf] ID: ${id}`);
-    console.log(`[downloadPdf] Title: ${pdf.title}`);
-    console.log(`[downloadPdf] Original URL: ${pdf.fileUrl}`);
+    console.log(`[downloadPdf] Downloading: ${pdf.title} from ${pdf.fileUrl}`);
 
-    // Add Cloudinary transformation to set the download filename
-    // Format: https://res.cloudinary.com/{cloud}/raw/upload/fl_attachment:{filename}/{path}
-    let modifiedUrl = pdf.fileUrl;
-    
-    try {
-      const urlObj = new URL(pdf.fileUrl);
-      const pathParts = urlObj.pathname.split('/');
-      const uploadIndex = pathParts.indexOf('upload');
+    // Set headers for download (RFC 5987 for Sinhala)
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
+    res.setHeader('Cache-Control', 'no-cache');
+
+    // Helper to follow redirects (Cloudinary uses them)
+    const MAX_REDIRECTS = 5;
+    const fetchWithRedirects = (currentUrl: string, redirectsRemaining: number) => {
+      const protocol = currentUrl.startsWith('https') ? https : http;
       
-      if (uploadIndex !== -1 && uploadIndex < pathParts.length - 1) {
-        // Insert the fl_attachment transformation after 'upload'
-        // Cloudinary will use this as the download filename
-        const encodedFilename = encodeURIComponent(downloadFilename);
-        pathParts.splice(uploadIndex + 1, 0, `fl_attachment:${encodedFilename}`);
-        urlObj.pathname = pathParts.join('/');
-        modifiedUrl = urlObj.toString();
-        console.log(`[downloadPdf] Modified URL: ${modifiedUrl}`);
-      }
-    } catch (urlError) {
-      console.error('[downloadPdf] URL modification error:', urlError);
-      // Fall back to original URL if modification fails
-    }
+      const request = protocol.get(currentUrl, {
+        headers: { 'User-Agent': 'BuddyStore-Backend/1.0' }
+      }, (proxyRes) => {
+        // Handle Redirects
+        if ([301, 302, 307, 308].includes(proxyRes.statusCode || 0) && proxyRes.headers.location) {
+          if (redirectsRemaining <= 0) {
+            console.error('[downloadPdf] Too many redirects');
+            if (!res.headersSent) res.status(502).json({ success: false, message: 'Too many redirects' });
+            return;
+          }
+          console.log(`[downloadPdf] Following redirect to: ${proxyRes.headers.location}`);
+          fetchWithRedirects(proxyRes.headers.location, redirectsRemaining - 1);
+          return;
+        }
 
-    // Redirect to the Cloudinary URL (with or without transformation)
-    res.redirect(302, modifiedUrl);
+        // Handle Errors
+        if (proxyRes.statusCode !== 200) {
+          console.error(`[downloadPdf] Cloudinary returned status ${proxyRes.statusCode}`);
+          if (!res.headersSent) res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+          return;
+        }
+
+        // Set content length if available
+        if (proxyRes.headers['content-length']) {
+          res.setHeader('Content-Length', proxyRes.headers['content-length']);
+        }
+
+        // Pipe the response from Cloudinary to the client
+        proxyRes.pipe(res);
+
+        proxyRes.on('error', (err) => {
+          console.error('[downloadPdf] Proxy stream error:', err);
+          if (!res.headersSent) res.status(502).json({ success: false, message: 'Stream error' });
+        });
+      });
+
+      request.on('error', (error) => {
+        console.error('[downloadPdf] HTTP request error:', error);
+        if (!res.headersSent) res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+      });
+    };
+
+    fetchWithRedirects(pdf.fileUrl, MAX_REDIRECTS);
   } catch (error: any) {
     console.error('[downloadPdf] Exception:', error);
     if (!res.headersSent) {
-      res.status(500).json({ 
-        success: false, 
-        message: 'Server error',
-        debug: error.message 
-      });
+      res.status(500).json({ success: false, message: 'Server error', debug: error.message });
     }
   }
 }
