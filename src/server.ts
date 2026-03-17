@@ -17,17 +17,13 @@ async function bootstrap() {
   initSocket(httpServer);
   console.log('✅ Socket.io initialized');
 
-  // ─── Start BullMQ Worker (optional — needs Redis) ──────────────────────────
-  let worker: Awaited<ReturnType<typeof createVideoDeliveryWorker>> | null = null;
-  if (config.redis.url) {
-    try {
-      worker = createVideoDeliveryWorker();
-      console.log('✅ Video delivery worker started');
-    } catch (err) {
-      console.warn('⚠️  Redis not available — video delivery queue disabled. Set REDIS_URL to enable.');
-    }
-  } else {
-    console.warn('⚠️  REDIS_URL not set — video delivery queue disabled');
+  // ─── Start Postgres Video Delivery Worker ──────────────────────────
+  let worker: ReturnType<typeof createVideoDeliveryWorker> | null = null;
+  try {
+    worker = createVideoDeliveryWorker();
+    console.log('✅ Postgres video delivery worker started');
+  } catch (err) {
+    console.error('⚠️  Failed to start video delivery queue:', err);
   }
 
   // ─── Start Telegram Bots ────────────────────────────────────────────────────
@@ -56,7 +52,7 @@ async function bootstrap() {
   const shutdown = async () => {
     console.log('\n⏳ Shutting down gracefully...');
     httpServer.close();
-    if (worker) await worker.close();
+    if (worker) worker.close();
     await prisma.$disconnect();
     console.log('✅ Shutdown complete');
     process.exit(0);
