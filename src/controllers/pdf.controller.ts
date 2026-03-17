@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
+import axios from 'axios';
+import { Stream } from 'stream';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC ENDPOINTS
@@ -360,10 +362,6 @@ export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<vo
   }
 }
 
-import axios from 'axios';
-
-// ... existing imports ...
-
 // GET /api/v1/public/pdf-download/:id
 export const downloadPdf = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -404,9 +402,9 @@ export const downloadPdf = async (req: Request, res: Response): Promise<void> =>
     res.setHeader('Content-Disposition', `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
     
     // Pipe the stream directly to the response
-    response.data.pipe(res);
+    (response.data as Stream).pipe(res);
 
-    response.data.on('error', (err: any) => {
+    (response.data as Stream).on('error', (err: any) => {
       console.error('[downloadPdf] Stream error:', err);
       if (!res.headersSent) {
         res.status(502).json({ success: false, message: 'Stream failed' });
