@@ -360,6 +360,10 @@ export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<vo
   }
 }
 
+import axios from 'axios';
+
+// ... existing imports ...
+
 // GET /api/v1/public/pdf-download/:id
 export const downloadPdf = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -376,39 +380,47 @@ export const downloadPdf = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    // Sanitize the title for use as a filename (remove invalid characters)
+    // Sanitize the title for use as a filename
     const safeFilename = pdf.title
       .replace(/[/\\?%*:|"<>]/g, '-')
       .replace(/\s+/g, ' ')
       .trim();
     const downloadFilename = `${safeFilename}.pdf`;
 
-    // Fetch the file from Cloudinary
-    console.log(`[downloadPdf] Attempting to fetch: ${pdf.fileUrl}`);
-    const fileResponse = await fetch(pdf.fileUrl);
+    // Fetch the file from Cloudinary using Axios stream
+    console.log(`[downloadPdf] Streaming from Cloudinary: ${pdf.fileUrl}`);
     
-    if (!fileResponse.ok) {
-      console.error(`[downloadPdf] Fetch failed: ${fileResponse.status} ${fileResponse.statusText}`);
-      res.status(502).json({ 
-        success: false, 
-        message: 'Failed to fetch PDF from storage',
-        debug: { status: fileResponse.status, url: pdf.fileUrl } 
-      });
-      return;
-    }
+    const response = await axios({
+      method: 'get',
+      url: pdf.fileUrl,
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'BuddyStore-Backend/1.0',
+      }
+    });
 
-    // Get the file buffer
-    const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
-
-    // Set headers for download with proper filename
+    // Set headers for download
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadFilename)}"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
-    res.setHeader('Content-Length', fileBuffer.length);
+    res.setHeader('Content-Disposition', `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
     
-    // Send the file
-    res.send(fileBuffer);
-  } catch (error) {
-    console.error('[downloadPdf]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    // Pipe the stream directly to the response
+    response.data.pipe(res);
+
+    response.data.on('error', (err: any) => {
+      console.error('[downloadPdf] Stream error:', err);
+      if (!res.headersSent) {
+        res.status(502).json({ success: false, message: 'Stream failed' });
+      }
+    });
+
+  } catch (error: any) {
+    console.error('[downloadPdf] Error:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to download PDF',
+        debug: error.response?.status || error.message 
+      });
+    }
   }
 }

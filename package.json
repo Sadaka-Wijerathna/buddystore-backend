@@ -22,6 +22,7 @@
     "@neondatabase/serverless": "^1.0.2",
     "@prisma/adapter-neon": "^7.5.0",
     "@prisma/client": "^7.5.0",
+    "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.71.0",
     "cloudinary": "^2.9.0",
@@ -36,6 +37,7 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@types/axios": "^0.9.36",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
