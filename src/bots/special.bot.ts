@@ -31,8 +31,65 @@ function extractSlug(caption: string | undefined): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
+const specialVideoBatch: { fileId: string; collectionId: string }[] = [];
+let specialBatchTimer: NodeJS.Timeout | null = null;
+
+async function processSpecialVideoBatch() {
+  specialBatchTimer = null;
+  const queuedVideos = [...specialVideoBatch];
+  specialVideoBatch.length = 0; // Clear the queue
+  
+  if (queuedVideos.length === 0) return;
+
+  // Deduplicate fileIds in memory
+  const uniqueFileIds = new Map<string, string>();
+  for (const v of queuedVideos) {
+    if (!uniqueFileIds.has(v.fileId)) {
+      uniqueFileIds.set(v.fileId, v.collectionId);
+    }
+  }
+
+  const fileIdsToCheck = Array.from(uniqueFileIds.keys());
+
+  try {
+    const existing = await prisma.specialVideo.findMany({
+      where: { fileId: { in: fileIdsToCheck } },
+      select: { fileId: true }
+    });
+    const existingIds = new Set(existing.map(v => v.fileId));
+
+    const newVideos = Array.from(uniqueFileIds.entries())
+                           .filter(([fileId]) => !existingIds.has(fileId))
+                           .map(([fileId, collectionId]) => ({ fileId, collectionId }));
+
+    if (newVideos.length > 0) {
+      await prisma.specialVideo.createMany({
+        data: newVideos,
+        skipDuplicates: true
+      });
+
+      // Update total videos count per collection
+      const collectionCounts = newVideos.reduce((acc, curr) => {
+        acc[curr.collectionId] = (acc[curr.collectionId] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      for (const [colId, count] of Object.entries(collectionCounts)) {
+        await prisma.specialCollection.update({
+          where: { id: colId },
+          data: { totalVideos: { increment: count } }
+        });
+        const total = await prisma.specialVideo.count({ where: { collectionId: colId } });
+        console.log(`[BuddySpecialBot] Batch saved ${count} videos. (Collection ${colId} total: ${total})`);
+      }
+    }
+  } catch (e) {
+    console.error(`[BuddySpecialBot] Batch save error:`, e);
+  }
+}
+
 // ─── Helper: save a video file_id under a collection (when collectionMode ON) ─
-async function saveVideoToCollection(ctx: Context, fileId: string) {
+async function queueVideoToCollection(ctx: Context, fileId: string) {
   const caption = ctx.message?.caption;
   const slug = extractSlug(caption);
 
@@ -42,11 +99,10 @@ async function saveVideoToCollection(ctx: Context, fileId: string) {
     // If they explicitly provided a #slug, use that collection
     collection = await prisma.specialCollection.findUnique({ where: { slug } });
     if (!collection) {
-      await ctx.reply(`❌ Collection *${slug}* not found. Create it in the admin panel first.`, { parse_mode: 'Markdown' });
+      // Don't reply on every single video in a batch of 500
       return;
     }
     if (!collection.collectionMode) {
-      await ctx.reply(`⛔ Collection mode is OFF for *${collection.title}*. Enable it in the admin panel first.`, { parse_mode: 'Markdown' });
       return;
     }
   } else {
@@ -55,45 +111,23 @@ async function saveVideoToCollection(ctx: Context, fileId: string) {
       where: { collectionMode: true },
     });
 
-    if (activeCollections.length === 0) {
-      await ctx.reply('⚠️ No specials are currently in *Collection Mode*. Please enable collection mode for a special bot in the admin panel first, or use a `#slug` caption.', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    if (activeCollections.length > 1) {
-      const activeNames = activeCollections.map(c => `\`#${c.slug}\``).join(', ');
-      await ctx.reply(`⚠️ Multiple specials are currently in *Collection Mode*. Please provide a caption tag to specify which one to upload to (e.g. ${activeNames}).`, { parse_mode: 'Markdown' });
-      return;
-    }
+    if (activeCollections.length === 0) return;
+    if (activeCollections.length > 1) return; // Need explicit slug if >1
 
     // Exactly one collection is active, so we use it automatically
     collection = activeCollections[0];
   }
 
-  // Avoid duplicates
-  const existing = await prisma.specialVideo.findUnique({ where: { fileId } });
-  if (existing) {
-    if (existing.collectionId === collection.id) {
-      await ctx.reply(`⚠️ This video is already saved to *${collection.title}*.`, { parse_mode: 'Markdown' });
-    } else {
-      await ctx.reply(`⚠️ This video is already saved in another collection.`, { parse_mode: 'Markdown' });
-    }
-    return;
+  // Push to memory batch
+  specialVideoBatch.push({ fileId, collectionId: collection.id });
+  
+  if (!specialBatchTimer) {
+    specialBatchTimer = setTimeout(() => {
+      processSpecialVideoBatch();
+    }, 3000); // Wait 3 seconds to accumulate batch
   }
 
-  await prisma.specialVideo.create({
-    data: { fileId, collectionId: collection.id },
-  });
-
-  // Update totalVideos counter
-  await prisma.specialCollection.update({
-    where: { id: collection.id },
-    data: { totalVideos: { increment: 1 } },
-  });
-
-  const total = await prisma.specialVideo.count({ where: { collectionId: collection.id } });
-  console.log(`[BuddySpecialBot] Saved video to "${collection.title}" (total: ${total})`);
-  await ctx.react('👍');
+  await ctx.react('👍').catch(() => {});
 }
 
 if (specialBotInstance) {
@@ -162,18 +196,18 @@ if (specialBotInstance) {
   // ─── Video upload (collection mode must be ON for the tagged collection) ────
   bot.on('message:video', async (ctx: Context) => {
     const fileId = ctx.message?.video?.file_id;
-    if (fileId) await saveVideoToCollection(ctx, fileId);
+    if (fileId) await queueVideoToCollection(ctx, fileId);
   });
 
   bot.on('message:video_note', async (ctx: Context) => {
     const fileId = ctx.message?.video_note?.file_id;
-    if (fileId) await saveVideoToCollection(ctx, fileId);
+    if (fileId) await queueVideoToCollection(ctx, fileId);
   });
 
   bot.on('message:document', async (ctx: Context) => {
     const doc = ctx.message?.document;
     if (doc?.mime_type?.startsWith('video/')) {
-      await saveVideoToCollection(ctx, doc.file_id);
+      await queueVideoToCollection(ctx, doc.file_id);
     }
   });
 

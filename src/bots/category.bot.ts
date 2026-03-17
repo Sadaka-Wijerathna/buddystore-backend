@@ -18,6 +18,11 @@ export class CategoryBot {
   public name: string;
   public hasToken: boolean;
   private botDbId: string | null = null;
+  
+  private cachedBotRecord: any = null;
+  private botRecordCacheTime: number = 0;
+  private pendingVideoBatch: string[] = [];
+  private batchTimer: NodeJS.Timeout | null = null;
 
   constructor(cfg: CategoryBotConfig) {
     this.category = cfg.category;
@@ -136,8 +141,8 @@ export class CategoryBot {
     const video = ctx.message?.video;
     if (!video) return;
 
-    await this.saveVideo(video.file_id, botRecord.id);
-    await ctx.react('👍');
+    this.queueVideoSave(video.file_id, botRecord.id);
+    await ctx.react('👍').catch(() => {});
   }
 
   private async handleVideoNoteMessage(ctx: Context) {
@@ -147,46 +152,83 @@ export class CategoryBot {
     const videoNote = ctx.message?.video_note;
     if (!videoNote) return;
 
-    await this.saveVideo(videoNote.file_id, botRecord.id);
-    await ctx.react('👍');
+    this.queueVideoSave(videoNote.file_id, botRecord.id);
+    await ctx.react('👍').catch(() => {});
   }
 
   private async handleDocumentVideoMessage(ctx: Context, fileId: string) {
     const botRecord = await this.getBotRecord();
     if (!botRecord?.collectionMode) return;
 
-    await this.saveVideo(fileId, botRecord.id);
-    await ctx.react('👍');
+    this.queueVideoSave(fileId, botRecord.id);
+    await ctx.react('👍').catch(() => {});
   }
 
-  private async saveVideo(fileId: string, botDbId: string) {
+  private queueVideoSave(fileId: string, botDbId: string) {
+    this.pendingVideoBatch.push(fileId);
+    if (!this.batchTimer) {
+      this.batchTimer = setTimeout(() => {
+        this.processVideoBatch(botDbId);
+      }, 3000); // Process batch 3 seconds after the first video
+    }
+  }
+
+  private async processVideoBatch(botDbId: string) {
+    this.batchTimer = null;
+    const fileIds = [...new Set(this.pendingVideoBatch)]; // Deduplicate
+    this.pendingVideoBatch = [];
+    
+    if (fileIds.length === 0) return;
+
     try {
-      // Check if already saved (avoid duplicates)
-      const existing = await prisma.videos.findUnique({ where: { fileId } });
-      if (existing) return;
-
-      await prisma.videos.create({
-        data: { fileId, category: this.category, botId: botDbId },
+      const existing = await prisma.videos.findMany({
+        where: { fileId: { in: fileIds } },
+        select: { fileId: true }
       });
+      const existingIds = new Set(existing.map(v => v.fileId));
 
-      // Update total count on bot record
-      await prisma.bot.update({
-        where: { id: botDbId },
-        data: { totalVideos: { increment: 1 } },
-      });
+      const newFileIds = fileIds.filter(id => !existingIds.has(id));
+      
+      if (newFileIds.length > 0) {
+        await prisma.videos.createMany({
+          data: newFileIds.map(fileId => ({
+            fileId,
+            category: this.category,
+            botId: botDbId
+          })),
+          skipDuplicates: true
+        });
 
-      console.log(`[${this.name}] Saved video: ${fileId}`);
-    } catch (error) {
-      console.error(`[${this.name}] Error saving video:`, error);
+        await prisma.bot.update({
+          where: { id: botDbId },
+          data: { totalVideos: { increment: newFileIds.length } }
+        });
+
+        console.log(`[${this.name}] Batch saved ${newFileIds.length} non-duplicate videos.`);
+      }
+    } catch (e) {
+      console.error(`[${this.name}] Batch save error:`, e);
     }
   }
 
   private async getBotRecord() {
-    if (this.botDbId) {
-      return prisma.bot.findUnique({ where: { id: this.botDbId } });
+    const now = Date.now();
+    if (this.cachedBotRecord && now < this.botRecordCacheTime) {
+      return this.cachedBotRecord;
     }
-    const record = await prisma.bot.findUnique({ where: { category: this.category } });
-    if (record) this.botDbId = record.id;
+    
+    let record;
+    if (this.botDbId) {
+      record = await prisma.bot.findUnique({ where: { id: this.botDbId } });
+    } else {
+      record = await prisma.bot.findUnique({ where: { category: this.category } });
+    }
+    
+    if (record) {
+      this.botDbId = record.id;
+      this.cachedBotRecord = record;
+      this.botRecordCacheTime = now + 10000; // 10 seconds cache
+    }
     return record;
   }
 
