@@ -2,9 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
 function createPrismaClient() {
-  return new PrismaClient({
-    datasourceUrl: process.env.DATABASE_URL,
-  } as any);
+  return new PrismaClient();
 }
 
 const globalForPrisma = globalThis as unknown as {
