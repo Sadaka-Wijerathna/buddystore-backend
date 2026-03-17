@@ -1,13 +1,9 @@
 import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
-import { PrismaNeonHttp } from '@prisma/adapter-neon';
 
-// The Neon HTTP Serverless adapter doesn't support interactive transactions OR migrations safely
-// We only use it for standard client queries. For migrations/deployments we use the standard Postgres driver.
 function createPrismaClient() {
-  // Temporary fix for Railway: just use the standard Prisma TCP connection pool
-  // This avoids tricky "Transactions are not supported in HTTP mode" issues
-  // and allows the `prisma migrate deploy` script to run cleanly on startup.
+  // Use the standard Prisma TCP connection pool 
+  // This bypasses entirely the @prisma/adapter-neon missing dependencies on Railway
   return new PrismaClient();
 }
 
