@@ -11,10 +11,6 @@ const config = {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   },
 
-  redis: {
-    url: process.env.REDIS_URL || '',
-  },
-
   uploadDir: process.env.UPLOAD_DIR || 'uploads',
 
   bots: {
