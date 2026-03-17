@@ -11,5 +11,6 @@ router.get('/special-collections', publicController.getPublicSpecialCollections)
 router.get('/pdf-categories', pdfController.getPublicPdfCategories);
 router.get('/pdf-series/:subcategorySlug', pdfController.getPublicPdfSeries);
 router.get('/pdfs/:seriesSlug', pdfController.getPublicPdfs);
+router.get('/pdf-download/:id', pdfController.downloadPdf);
 
 export default router;

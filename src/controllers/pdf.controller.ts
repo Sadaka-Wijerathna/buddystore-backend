@@ -359,3 +359,49 @@ export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<vo
     res.status(500).json({ success: false, message: 'Server error' });
   }
 }
+
+// GET /api/v1/public/pdf-download/:id
+export const downloadPdf = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ success: false, message: 'Invalid PDF ID' });
+      return;
+    }
+
+    // Fetch the PDF record to get the title and fileUrl
+    const pdf = await prisma.freePdf.findUnique({ where: { id } });
+    if (!pdf) {
+      res.status(404).json({ success: false, message: 'PDF not found' });
+      return;
+    }
+
+    // Sanitize the title for use as a filename (remove invalid characters)
+    const safeFilename = pdf.title
+      .replace(/[/\\?%*:|"<>]/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const downloadFilename = `${safeFilename}.pdf`;
+
+    // Fetch the file from Cloudinary
+    const fileResponse = await fetch(pdf.fileUrl);
+    if (!fileResponse.ok) {
+      res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+      return;
+    }
+
+    // Get the file buffer
+    const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+
+    // Set headers for download with proper filename
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadFilename)}"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
+    res.setHeader('Content-Length', fileBuffer.length);
+    
+    // Send the file
+    res.send(fileBuffer);
+  } catch (error) {
+    console.error('[downloadPdf]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+}
