@@ -384,9 +384,16 @@ export const downloadPdf = async (req: Request, res: Response): Promise<void> =>
     const downloadFilename = `${safeFilename}.pdf`;
 
     // Fetch the file from Cloudinary
+    console.log(`[downloadPdf] Attempting to fetch: ${pdf.fileUrl}`);
     const fileResponse = await fetch(pdf.fileUrl);
+    
     if (!fileResponse.ok) {
-      res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+      console.error(`[downloadPdf] Fetch failed: ${fileResponse.status} ${fileResponse.statusText}`);
+      res.status(502).json({ 
+        success: false, 
+        message: 'Failed to fetch PDF from storage',
+        debug: { status: fileResponse.status, url: pdf.fileUrl } 
+      });
       return;
     }
 
