@@ -59,8 +59,9 @@ export const uploadPdf = (buffer: Buffer, filename: string, displayName?: string
         public_id: filename,
         resource_type: 'raw',
         // Force the browser to treat it as an attachment with the correct name
+        // Use RFC 5987 for non-ASCII (Sinhala) characters support in headers
         content_disposition: displayName 
-          ? `attachment; filename="${displayName.replace(/"/g, "'")}.pdf"`
+          ? `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(displayName)}.pdf`
           : undefined,
       },
       (error, result) => {
