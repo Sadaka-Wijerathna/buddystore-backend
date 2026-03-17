@@ -10,6 +10,7 @@ router.get('/special-collections', publicController.getPublicSpecialCollections)
 // Free PDFs
 router.get('/pdf-categories', pdfController.getPublicPdfCategories);
 router.get('/pdf-series/:subcategorySlug', pdfController.getPublicPdfSeries);
+router.get('/pdfs/download/:id', pdfController.downloadFreePdf);
 router.get('/pdfs/:seriesSlug', pdfController.getPublicPdfs);
 
 export default router;

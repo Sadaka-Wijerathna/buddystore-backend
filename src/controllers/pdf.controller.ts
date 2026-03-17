@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import https from 'https';
+import http from 'http';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
@@ -56,6 +58,49 @@ export const getPublicPdfSeries = async (req: Request, res: Response): Promise<v
   } catch (error) {
     console.error('[getPublicPdfSeries]', error);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/public/pdfs/download/:id
+export const downloadFreePdf = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const pdf = await prisma.freePdf.findUnique({ where: { id }, select: { title: true, fileUrl: true } });
+    if (!pdf) {
+      res.status(404).json({ success: false, message: 'PDF not found' });
+      return;
+    }
+
+    // RFC 5987 encode the filename so non-ASCII (Sinhala etc.) works in all browsers
+    const safeName = `${pdf.title.replace(/"/g, '')}.pdf`;
+    const encodedName = encodeURIComponent(safeName).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="download.pdf"; filename*=UTF-8''${encodedName}`
+    );
+    res.setHeader('Cache-Control', 'no-cache');
+
+    // Stream from Cloudinary
+    const url = new URL(pdf.fileUrl);
+    const transport = url.protocol === 'https:' ? https : http;
+    transport.get(pdf.fileUrl, (upstream) => {
+      if (upstream.statusCode && upstream.statusCode >= 400) {
+        res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+        return;
+      }
+      upstream.pipe(res);
+    }).on('error', () => {
+      if (!res.headersSent) {
+        res.status(502).json({ success: false, message: 'Failed to stream PDF' });
+      }
+    });
+  } catch (error) {
+    console.error('[downloadFreePdf]', error);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: 'Server error' });
+    }
   }
 };
 
