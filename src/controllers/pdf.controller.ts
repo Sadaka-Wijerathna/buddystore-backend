@@ -99,7 +99,12 @@ export const downloadFreePdf = async (req: Request, res: Response): Promise<void
     const publicId = extractCloudinaryPublicId(pdf.fileUrl);
     let fetchUrl = pdf.fileUrl;
     if (publicId) {
-      fetchUrl = cloudinaryLib.utils.private_download_url(publicId, 'pdf', {
+      // For raw resources, public_id INCLUDES the file extension (e.g. file.pdf).
+      // private_download_url would append format as another extension → double .pdf → 404.
+      // Strip the extension here and pass it as the format argument instead.
+      const ext = publicId.match(/\.([^.]+)$/)?.[1] ?? 'pdf';
+      const publicIdNoExt = publicId.replace(/\.[^.]+$/, '');
+      fetchUrl = cloudinaryLib.utils.private_download_url(publicIdNoExt, ext, {
         resource_type: 'raw',
         expires_at: Math.floor(Date.now() / 1000) + 300,  // 5-min validity
         attachment: false, // we handle Content-Disposition ourselves
