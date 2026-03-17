@@ -24,7 +24,7 @@ router.delete('/pdf-series/:id', pdfController.deletePdfSeries);
 
 // PDFs
 router.get('/pdfs', pdfController.getAdminPdfs);
-router.post('/pdfs', upload.array('files', 50), pdfController.uploadFreePdf);
+router.post('/pdfs', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'files', maxCount: 50 }]), pdfController.uploadFreePdf);
 router.delete('/pdfs/:id', pdfController.deleteFreePdf);
 
 export default router;

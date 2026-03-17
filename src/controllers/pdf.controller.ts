@@ -1,4 +1,4 @@
-﻿import { Request, Response } from 'express';
+import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
@@ -8,7 +8,6 @@ import { uploadBanner, uploadPdf } from '../lib/cloudinary';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // GET /api/v1/public/pdf-categories
-// Returns all categories with their subcategories
 export const getPublicPdfCategories = async (_req: Request, res: Response): Promise<void> => {
   try {
     const categories = await prisma.pdfCategory.findMany({
@@ -19,7 +18,6 @@ export const getPublicPdfCategories = async (_req: Request, res: Response): Prom
         },
       },
     });
-
     res.json({ success: true, data: categories });
   } catch (error) {
     console.error('[getPublicPdfCategories]', error);
@@ -28,28 +26,21 @@ export const getPublicPdfCategories = async (_req: Request, res: Response): Prom
 };
 
 // GET /api/v1/public/pdf-series/:subcategorySlug
-// Returns all series for a given subcategory slug, with PDF count
 export const getPublicPdfSeries = async (req: Request, res: Response): Promise<void> => {
   try {
     const subcategorySlug = String(req.params.subcategorySlug);
-
     const subcategory = await prisma.pdfSubCategory.findUnique({
       where: { slug: subcategorySlug },
     });
-
     if (!subcategory) {
       res.status(404).json({ success: false, message: 'Subcategory not found' });
       return;
     }
-
     const series = await prisma.pdfSeries.findMany({
       where: { subcategoryId: subcategory.id },
       orderBy: { createdAt: 'asc' },
-      include: {
-        _count: { select: { pdfs: true } },
-      },
+      include: { _count: { select: { pdfs: true } } },
     });
-
     res.json({
       success: true,
       data: series.map((s) => ({
@@ -69,25 +60,17 @@ export const getPublicPdfSeries = async (req: Request, res: Response): Promise<v
 };
 
 // GET /api/v1/public/pdfs/:seriesSlug
-// Returns all PDFs for a given series slug
 export const getPublicPdfs = async (req: Request, res: Response): Promise<void> => {
   try {
     const seriesSlug = String(req.params.seriesSlug);
-
     const series = await prisma.pdfSeries.findUnique({
       where: { slug: seriesSlug },
-      include: {
-        pdfs: {
-          orderBy: { order: 'asc' },
-        },
-      },
+      include: { pdfs: { orderBy: { order: 'asc' } } },
     });
-
     if (!series) {
       res.status(404).json({ success: false, message: 'Series not found' });
       return;
     }
-
     res.json({
       success: true,
       data: {
@@ -96,7 +79,7 @@ export const getPublicPdfs = async (req: Request, res: Response): Promise<void> 
         title: series.title,
         description: series.description,
         bannerUrl: series.bannerUrl,
-        pdfs: series.pdfs.map((p: { id: string; title: string; fileUrl: string; fileSize: string | null; order: number }) => ({
+        pdfs: series.pdfs.map((p) => ({
           id: p.id,
           title: p.title,
           fileUrl: p.fileUrl,
@@ -115,7 +98,6 @@ export const getPublicPdfs = async (req: Request, res: Response): Promise<void> 
 // ADMIN ENDPOINTS — Categories
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// GET /api/v1/admin/pdf-categories
 export const getAdminPdfCategories = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
     const categories = await prisma.pdfCategory.findMany({
@@ -123,14 +105,11 @@ export const getAdminPdfCategories = async (_req: AuthRequest, res: Response): P
       include: {
         subcategories: {
           orderBy: { order: 'asc' },
-          include: {
-            _count: { select: { series: true } },
-          },
+          include: { _count: { select: { series: true } } },
         },
         _count: { select: { subcategories: true } },
       },
     });
-
     res.json({ success: true, data: categories });
   } catch (error) {
     console.error('[getAdminPdfCategories]', error);
@@ -138,43 +117,31 @@ export const getAdminPdfCategories = async (_req: AuthRequest, res: Response): P
   }
 };
 
-// POST /api/v1/admin/pdf-categories  { slug, title, order? }
 export const createPdfCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { slug, title, order } = req.body as { slug: string; title: string; order?: number };
-
+    const { slug, title, order } = req.body;
     if (!slug || !title) {
       res.status(400).json({ success: false, message: 'slug and title are required' });
       return;
     }
-    if (!/^[a-z0-9_]+$/.test(slug)) {
-      res.status(400).json({ success: false, message: 'slug must be lowercase letters, numbers, and underscores only' });
-      return;
-    }
-
     const category = await prisma.pdfCategory.create({
       data: { slug, title, order: order ?? 0 },
     });
-
     res.status(201).json({ success: true, data: category });
   } catch (error: any) {
     if (error?.code === 'P2002') {
       res.status(409).json({ success: false, message: 'A category with this slug already exists' });
       return;
     }
-    console.error('[createPdfCategory]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// DELETE /api/v1/admin/pdf-categories/:id
 export const deletePdfCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const id = String(req.params.id);
-    await prisma.pdfCategory.delete({ where: { id } });
+    await prisma.pdfCategory.delete({ where: { id: req.params.id } });
     res.json({ success: true, message: 'Category deleted' });
   } catch (error) {
-    console.error('[deletePdfCategory]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -183,45 +150,31 @@ export const deletePdfCategory = async (req: AuthRequest, res: Response): Promis
 // ADMIN ENDPOINTS — Subcategories
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// POST /api/v1/admin/pdf-subcategories  { slug, title, categoryId, order? }
 export const createPdfSubCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { slug, title, categoryId, order } = req.body as {
-      slug: string; title: string; categoryId: string; order?: number;
-    };
-
+    const { slug, title, categoryId, order } = req.body;
     if (!slug || !title || !categoryId) {
       res.status(400).json({ success: false, message: 'slug, title, and categoryId are required' });
       return;
     }
-    if (!/^[a-z0-9_]+$/.test(slug)) {
-      res.status(400).json({ success: false, message: 'slug must be lowercase letters, numbers, and underscores only' });
-      return;
-    }
-
     const subcategory = await prisma.pdfSubCategory.create({
       data: { slug, title, categoryId, order: order ?? 0 },
     });
-
     res.status(201).json({ success: true, data: subcategory });
   } catch (error: any) {
     if (error?.code === 'P2002') {
       res.status(409).json({ success: false, message: 'A subcategory with this slug already exists' });
       return;
     }
-    console.error('[createPdfSubCategory]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// DELETE /api/v1/admin/pdf-subcategories/:id
 export const deletePdfSubCategory = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const id = String(req.params.id);
-    await prisma.pdfSubCategory.delete({ where: { id } });
+    await prisma.pdfSubCategory.delete({ where: { id: req.params.id } });
     res.json({ success: true, message: 'Subcategory deleted' });
   } catch (error) {
-    console.error('[deletePdfSubCategory]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -230,13 +183,10 @@ export const deletePdfSubCategory = async (req: AuthRequest, res: Response): Pro
 // ADMIN ENDPOINTS — Series
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// GET /api/v1/admin/pdf-series?subcategoryId=xxx
 export const getAdminPdfSeries = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { subcategoryId } = req.query;
-
     const where = subcategoryId ? { subcategoryId: String(subcategoryId) } : {};
-
     const series = await prisma.pdfSeries.findMany({
       where,
       orderBy: { createdAt: 'asc' },
@@ -245,7 +195,6 @@ export const getAdminPdfSeries = async (req: AuthRequest, res: Response): Promis
         subcategory: { select: { title: true, slug: true } },
       },
     });
-
     res.json({
       success: true,
       data: series.map((s) => ({
@@ -260,56 +209,40 @@ export const getAdminPdfSeries = async (req: AuthRequest, res: Response): Promis
       })),
     });
   } catch (error) {
-    console.error('[getAdminPdfSeries]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// POST /api/v1/admin/pdf-series  (multipart: slug, title, description?, subcategoryId, banner?)
 export const createPdfSeries = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { slug, title, description, subcategoryId } = req.body as {
-      slug: string; title: string; description?: string; subcategoryId: string;
-    };
-
+    const { slug, title, description, subcategoryId } = req.body;
     if (!slug || !title || !subcategoryId) {
       res.status(400).json({ success: false, message: 'slug, title, and subcategoryId are required' });
       return;
     }
-    if (!/^[a-z0-9_]+$/.test(slug)) {
-      res.status(400).json({ success: false, message: 'slug must be lowercase letters, numbers, and underscores only' });
-      return;
-    }
-
     let bannerUrl: string | null = null;
     if (req.file) {
       const filename = `pdf-series-${slug}-${Date.now()}`;
       bannerUrl = await uploadBanner(req.file.buffer, filename);
     }
-
     const series = await prisma.pdfSeries.create({
       data: { slug, title, description, subcategoryId, bannerUrl },
     });
-
     res.status(201).json({ success: true, data: { ...series, pdfCount: 0 } });
   } catch (error: any) {
     if (error?.code === 'P2002') {
       res.status(409).json({ success: false, message: 'A series with this slug already exists' });
       return;
     }
-    console.error('[createPdfSeries]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// DELETE /api/v1/admin/pdf-series/:id
 export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const id = String(req.params.id);
-    await prisma.pdfSeries.delete({ where: { id } });
+    await prisma.pdfSeries.delete({ where: { id: req.params.id } });
     res.json({ success: true, message: 'Series deleted' });
   } catch (error) {
-    console.error('[deletePdfSeries]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -318,71 +251,44 @@ export const deletePdfSeries = async (req: AuthRequest, res: Response): Promise<
 // ADMIN ENDPOINTS — PDFs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// GET /api/v1/admin/pdfs?seriesId=xxx
 export const getAdminPdfs = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { seriesId } = req.query;
-
-    if (!seriesId) {
-      res.status(400).json({ success: false, message: 'seriesId query param is required' });
-      return;
-    }
-
-    const pdfs = await prisma.freePdf.findMany({
-      where: { seriesId: String(seriesId) },
-      orderBy: { order: 'asc' },
-    });
-
-    res.json({ success: true, data: pdfs });
-  } catch (error) {
-    console.error('[getAdminPdfs]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
-
-// POST /api/v1/admin/pdfs  (multipart: titles (JSON array), seriesId, files[])
-// Supports both single and bulk upload. titles[i] maps to files[i].
-export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const { seriesId } = req.body as { seriesId: string };
-
     if (!seriesId) {
       res.status(400).json({ success: false, message: 'seriesId is required' });
       return;
     }
+    const pdfs = await prisma.freePdf.findMany({
+      where: { seriesId: String(seriesId) },
+      orderBy: { order: 'asc' },
+    });
+    res.json({ success: true, data: pdfs });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
 
-    // Support both upload.array (req.files) and legacy upload.single (req.file)
-    const files: Express.Multer.File[] = Array.isArray(req.files)
-      ? (req.files as Express.Multer.File[])
-      : req.file
-        ? [req.file]
-        : [];
+export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { seriesId, title, titles } = req.body;
+    // titles is a JSON-encoded array for bulk
+    const parsedTitles: string[] = titles ? JSON.parse(titles) : [];
+    
+    // Cast to handle upload.fields or upload.array
+    const multerFiles = req.files as { [fieldname: string]: Express.Multer.File[] } | Express.Multer.File[] | undefined;
+    
+    let allFiles: Express.Multer.File[] = [];
+    if (Array.isArray(multerFiles)) {
+        allFiles = multerFiles;
+    } else if (multerFiles) {
+        allFiles = [...(multerFiles['files'] || []), ...(multerFiles['file'] || [])];
+    } else if (req.file) {
+        allFiles = [req.file];
+    }
 
-    if (files.length === 0) {
-      res.status(400).json({ success: false, message: 'At least one PDF file is required' });
+    if (!seriesId || allFiles.length === 0) {
+      res.status(400).json({ success: false, message: 'seriesId and at least one file are required' });
       return;
-    }
-
-    // Parse titles - can be a JSON array string, a repeated field array, or a single string
-    const titlesRaw: string | string[] = req.body.titles ?? req.body.title ?? '';
-    let titles: string[];
-    if (Array.isArray(titlesRaw)) {
-      titles = titlesRaw;
-    } else {
-      try {
-        const parsed = JSON.parse(titlesRaw as string);
-        titles = Array.isArray(parsed) ? parsed : [String(parsed)];
-      } catch {
-        titles = [String(titlesRaw)];
-      }
-    }
-
-    // Validate all files are PDFs
-    for (const file of files) {
-      if (file.mimetype !== 'application/pdf') {
-        res.status(400).json({ success: false, message: `File "${file.originalname}" is not a PDF` });
-        return;
-      }
     }
 
     // Get current max order to append after
@@ -393,55 +299,43 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
     });
     let nextOrder = (last?.order ?? -1) + 1;
 
-    // Upload each file
     const results = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      // Use provided title or fall back to filename (without .pdf extension)
-      const title = (titles[i] ?? '').trim() ||
-        file.originalname.replace(/\.pdf$/i, '').replace(/_/g, ' ').trim();
+    for (let i = 0; i < allFiles.length; i++) {
+        const file = allFiles[i];
+        if (file.mimetype !== 'application/pdf') continue;
 
-      // Calculate file size string
-      const bytes = file.size;
-      let fileSize: string;
-      if (bytes >= 1024 * 1024) {
-        fileSize = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-      } else {
-        fileSize = `${Math.round(bytes / 1024)} KB`;
-      }
+        // Use title from parsedTitles, or the 'title' field (for single), or filename
+        const currentTitle = parsedTitles[i] || title || file.originalname.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim();
 
-      // Upload to Cloudinary
-      const safeTitle = title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-      const filename = `pdf-${seriesId}-${safeTitle}-${Date.now()}-${i}`;
-      const fileUrl = await uploadPdf(file.buffer, filename);
+        const safeTitle = currentTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
+        const filename = `pdf-${seriesId}-${safeTitle}-${Date.now()}-${i}`;
+        const fileUrl = await uploadPdf(file.buffer, filename);
+        
+        const bytes = file.size;
+        const fileSize = bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`;
 
-      const pdf = await prisma.freePdf.create({
-        data: { title, fileUrl, fileSize, seriesId, order: nextOrder++ },
-      });
-
-      results.push(pdf);
+        const pdf = await prisma.freePdf.create({
+          data: { title: currentTitle, fileUrl, fileSize, seriesId, order: nextOrder++ },
+        });
+        results.push(pdf);
     }
 
-    // Return single item for single upload (backward compat), array for bulk
-    if (results.length === 1) {
-      res.status(201).json({ success: true, data: results[0] });
-    } else {
-      res.status(201).json({ success: true, data: results });
-    }
+    // Return single item for single upload, array for bulk
+    res.status(201).json({ 
+        success: true, 
+        data: results.length === 1 ? results[0] : results 
+    });
   } catch (error) {
     console.error('[uploadFreePdf]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// DELETE /api/v1/admin/pdfs/:id
 export const deleteFreePdf = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const id = String(req.params.id);
-    await prisma.freePdf.delete({ where: { id } });
+    await prisma.freePdf.delete({ where: { id: req.params.id } });
     res.json({ success: true, message: 'PDF deleted' });
   } catch (error) {
-    console.error('[deleteFreePdf]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
-};
+}
