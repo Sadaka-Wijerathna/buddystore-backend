@@ -46,32 +46,41 @@ export const createVideoDeliveryWorker = () => {
   // Poll every 5 seconds
   workerInterval = setInterval(async () => {
     try {
-      const pendingJob = await prisma.$transaction(async (tx) => {
-        // Find oldest pending job that isn't locked
-        const job = await tx.videoDeliveryJob.findFirst({
-          where: {
-            status: 'PENDING',
-            OR: [
-              { lockedUntil: null },
-              { lockedUntil: { lt: new Date() } }
-            ]
-          },
-          orderBy: { createdAt: 'asc' }
-        });
-
-        if (!job) return null;
-
-        // Lock it for 5 minutes so other workers don't grab it concurrently
-        return await tx.videoDeliveryJob.update({
-          where: { id: job.id },
-          data: { 
-            status: 'PROCESSING', 
-            lockedUntil: new Date(Date.now() + 5 * 60000), 
-            attempts: { increment: 1 } 
-          }
-        });
+      // Find oldest pending job that isn't locked
+      const job = await prisma.videoDeliveryJob.findFirst({
+        where: {
+          status: 'PENDING',
+          OR: [
+            { lockedUntil: null },
+            { lockedUntil: { lt: new Date() } }
+          ]
+        },
+        orderBy: { createdAt: 'asc' }
       });
 
+      if (!job) return;
+
+      // Lock it for 5 minutes so other workers don't grab it concurrently
+      // Using updateMany so we don't need a transaction (unsupported in Neon HTTP mode context)
+      const lockResult = await prisma.videoDeliveryJob.updateMany({
+        where: {
+          id: job.id,
+          status: 'PENDING',
+          OR: [
+            { lockedUntil: null },
+            { lockedUntil: { lt: new Date() } }
+          ]
+        },
+        data: { 
+          status: 'PROCESSING', 
+          lockedUntil: new Date(Date.now() + 5 * 60000), 
+          attempts: { increment: 1 } 
+        }
+      });
+
+      if (lockResult.count === 0) return; // Someone else grabbed it
+
+      const pendingJob = await prisma.videoDeliveryJob.findUnique({ where: { id: job.id } });
       if (!pendingJob) return;
       
       const { id: jobId, orderId, userId, userTelegramId, category, videoCount } = pendingJob;
