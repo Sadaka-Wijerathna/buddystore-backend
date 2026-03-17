@@ -323,8 +323,9 @@ export const uploadFreePdf = async (req: AuthRequest, res: Response): Promise<vo
         const currentTitle = parsedTitles[i] || title || file.originalname.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim();
 
         // Standard direct public_id logic
+        // Use only the subfolder part, as 'buddystore/pdfs' is handle by the library
         const safeTitle = currentTitle.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 50);
-        const filename = `buddystore/pdfs/${seriesId}/${safeTitle}_${Date.now()}`;
+        const filename = `${seriesId}/${safeTitle}_${Date.now()}.pdf`;
         const fileUrl = await uploadPdf(file.buffer, filename);
         
         const bytes = file.size;

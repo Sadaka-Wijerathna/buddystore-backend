@@ -51,18 +51,13 @@ export const uploadBanner = (buffer: Buffer, filename: string): Promise<string> 
  * Upload a PDF buffer to Cloudinary and return the secure URL.
  * Uses resource_type: 'raw' which is required for non-image files like PDFs.
  */
-export const uploadPdf = (buffer: Buffer, filename: string, displayName?: string): Promise<string> => {
+export const uploadPdf = (buffer: Buffer, filename: string): Promise<string> => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: 'buddystore/pdfs',
         public_id: filename,
         resource_type: 'raw',
-        // Force the browser to treat it as an attachment with the correct name
-        // Use RFC 5987 for non-ASCII (Sinhala) characters support in headers
-        content_disposition: displayName 
-          ? `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(displayName)}.pdf`
-          : undefined,
       },
       (error, result) => {
         if (error || !result) return reject(error ?? new Error('Upload failed'));
