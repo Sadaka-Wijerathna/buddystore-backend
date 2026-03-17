@@ -2,8 +2,8 @@ import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadBanner, uploadPdf } from '../lib/cloudinary';
-import axios from 'axios';
-import { Stream } from 'stream';
+import https from 'https';
+import http from 'http';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC ENDPOINTS
@@ -385,40 +385,49 @@ export const downloadPdf = async (req: Request, res: Response): Promise<void> =>
       .trim();
     const downloadFilename = `${safeFilename}.pdf`;
 
-    // Fetch the file from Cloudinary using Axios stream
-    console.log(`[downloadPdf] Streaming from Cloudinary: ${pdf.fileUrl}`);
-    
-    const response = await axios({
-      method: 'get',
-      url: pdf.fileUrl,
-      responseType: 'stream',
-      headers: {
-        'User-Agent': 'BuddyStore-Backend/1.0',
-      }
-    });
+    console.log(`[downloadPdf] Downloading: ${pdf.title} from ${pdf.fileUrl}`);
 
-    // Set headers for download
+    // Set headers for download with proper filename
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="document.pdf"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
-    
-    // Pipe the stream directly to the response
-    (response.data as Stream).pipe(res);
+    res.setHeader('Cache-Control', 'no-cache');
 
-    (response.data as Stream).on('error', (err: any) => {
-      console.error('[downloadPdf] Stream error:', err);
+    // Stream the file from Cloudinary to the response
+    const protocol = pdf.fileUrl.startsWith('https') ? https : http;
+    
+    protocol.get(pdf.fileUrl, (proxyRes) => {
+      if (proxyRes.statusCode !== 200) {
+        console.error(`[downloadPdf] Cloudinary returned status ${proxyRes.statusCode}`);
+        if (!res.headersSent) {
+          res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
+        }
+        return;
+      }
+
+      // Set content length if available
+      if (proxyRes.headers['content-length']) {
+        res.setHeader('Content-Length', proxyRes.headers['content-length']);
+      }
+
+      // Pipe the response from Cloudinary to the client
+      proxyRes.pipe(res);
+
+      proxyRes.on('error', (err) => {
+        console.error('[downloadPdf] Proxy stream error:', err);
+        if (!res.headersSent) {
+          res.status(502).json({ success: false, message: 'Stream error' });
+        }
+      });
+    }).on('error', (error) => {
+      console.error('[downloadPdf] HTTP request error:', error);
       if (!res.headersSent) {
-        res.status(502).json({ success: false, message: 'Stream failed' });
+        res.status(502).json({ success: false, message: 'Failed to fetch PDF from storage' });
       }
     });
-
-  } catch (error: any) {
-    console.error('[downloadPdf] Error:', error.message);
+  } catch (error) {
+    console.error('[downloadPdf]', error);
     if (!res.headersSent) {
-      res.status(500).json({ 
-        success: false, 
-        message: 'Failed to download PDF',
-        debug: error.response?.status || error.message 
-      });
+      res.status(500).json({ success: false, message: 'Server error' });
     }
   }
 }
