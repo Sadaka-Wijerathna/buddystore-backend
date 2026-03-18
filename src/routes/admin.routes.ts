@@ -18,6 +18,7 @@ router.delete('/bots/:id/videos', adminController.clearBotVideos);
 // Special Bot Collections
 router.get('/special-collections', adminController.getSpecialCollections);
 router.post('/special-collections', upload.single('banner'), adminController.createSpecialCollection);
+router.patch('/special-collections/:id', upload.single('banner'), adminController.updateSpecialCollection);
 router.patch('/special-collections/:id/collection-mode', adminController.toggleSpecialCollectionMode);
 router.delete('/special-collections/:id/videos', adminController.clearSpecialCollectionVideos);
 router.delete('/special-collections/:id', adminController.deleteSpecialCollection);

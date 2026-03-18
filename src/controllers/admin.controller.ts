@@ -642,6 +642,40 @@ export const createSpecialCollection = async (req: AuthRequest, res: Response): 
   }
 };
 
+// PATCH /admin/special-collections/:id  { title?, description?, trendingTag? }
+export const updateSpecialCollection = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { title, description, trendingTag } = req.body as { title?: string; description?: string; trendingTag?: string };
+    
+    const existing = await prisma.specialCollection.findUnique({ where: { id } });
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Collection not found' });
+      return;
+    }
+
+    const data: any = {};
+    if (title) data.title = title;
+    if (description !== undefined) data.description = description;
+    if (trendingTag) data.trendingTag = trendingTag;
+    
+    if (req.file) {
+      const filename = `special-${existing.slug}-${Date.now()}`;
+      data.banner = await uploadBanner(req.file.buffer, filename);
+    }
+
+    const collection = await prisma.specialCollection.update({
+      where: { id },
+      data,
+    });
+
+    res.json({ success: true, data: collection });
+  } catch (error) {
+    console.error('[updateSpecialCollection]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 // PATCH /admin/special-collections/:id/collection-mode  { enabled }
 export const toggleSpecialCollectionMode = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
