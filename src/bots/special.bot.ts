@@ -154,6 +154,7 @@ async function queueVideoToCollection(ctx: Context, fileId: string) {
                       (ctx.message?.document as any)?.thumbnail;
                       
     if (thumbnail && config.bots.special) {
+      console.log(`[BuddySpecialBot] Processing thumbnail: ${thumbnail.width}x${thumbnail.height}, size: ${thumbnail.file_size}`);
       downloadTelegramFile(thumbnail.file_id, config.bots.special)
         .then(async (buffer) => {
           const bannerUrl = await uploadBanner(buffer, `banner_${collection.slug}_${Date.now()}`);
@@ -161,7 +162,7 @@ async function queueVideoToCollection(ctx: Context, fileId: string) {
             where: { id: collection.id },
             data: { banner: bannerUrl }
           });
-          console.log(`[BuddySpecialBot] Auto-set banner for collection: ${collection.title}`);
+          console.log(`[BuddySpecialBot] Auto-set banner for collection: ${collection.title} (${bannerUrl})`);
         })
         .catch(err => console.error(`[BuddySpecialBot] Auto-banner failed:`, err));
     }

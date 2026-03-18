@@ -37,6 +37,7 @@ export const uploadBanner = (buffer: Buffer, filename: string): Promise<string> 
         folder: 'buddystore/banners',
         public_id: filename,
         resource_type: 'image',
+        transformation: [{ quality: 'auto', fetch_format: 'auto' }],
       },
       (error, result) => {
         if (error || !result) return reject(error ?? new Error('Upload failed'));
