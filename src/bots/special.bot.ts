@@ -150,8 +150,7 @@ async function queueVideoToCollection(ctx: Context, fileId: string) {
   // ─── Auto-Banner Feature ───────────────────────────────────────────────────
   // If the collection doesn't have a banner image, try to get it from the video thumbnail
   if (!collection.banner) {
-    const thumbnail = ctx.message?.video?.thumbnail?.[0] || 
-                      ctx.message?.video?.thumbnail || 
+    const thumbnail = ctx.message?.video?.thumbnail || 
                       (ctx.message?.document as any)?.thumbnail;
                       
     if (thumbnail && config.bots.special) {
