@@ -1,6 +1,8 @@
 import { Bot, Context } from 'grammy';
+import https from 'https';
 import prisma from '../lib/prisma';
 import config from '../config';
+import { uploadBanner } from '../lib/cloudinary';
 
 // ─── BuddySpecialBot ──────────────────────────────────────────────────────────
 // Delivers free video collections via Telegram deep links.
@@ -29,6 +31,24 @@ function extractSlug(caption: string | undefined): string | null {
   if (!caption) return null;
   const match = caption.match(/#([a-z0-9_]+)/i);
   return match ? match[1].toLowerCase() : null;
+}
+
+// ─── Helper: download file from Telegram ─────────────────────────────────────
+async function downloadTelegramFile(fileId: string, token: string): Promise<Buffer> {
+  const bot = specialBotInstance;
+  if (!bot) throw new Error('Bot instance not initialized');
+
+  const file = await bot.api.getFile(fileId);
+  const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      const chunks: any[] = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', (err) => reject(err));
+    }).on('error', (err) => reject(err));
+  });
 }
 
 const specialVideoBatch: { fileId: string; collectionId: string }[] = [];
@@ -125,6 +145,27 @@ async function queueVideoToCollection(ctx: Context, fileId: string) {
     specialBatchTimer = setTimeout(() => {
       processSpecialVideoBatch();
     }, 3000); // Wait 3 seconds to accumulate batch
+  }
+
+  // ─── Auto-Banner Feature ───────────────────────────────────────────────────
+  // If the collection doesn't have a banner image, try to get it from the video thumbnail
+  if (!collection.banner) {
+    const thumbnail = ctx.message?.video?.thumbnail?.[0] || 
+                      ctx.message?.video?.thumbnail || 
+                      (ctx.message?.document as any)?.thumbnail;
+                      
+    if (thumbnail && config.bots.special) {
+      downloadTelegramFile(thumbnail.file_id, config.bots.special)
+        .then(async (buffer) => {
+          const bannerUrl = await uploadBanner(buffer, `banner_${collection.slug}_${Date.now()}`);
+          await prisma.specialCollection.update({
+            where: { id: collection.id },
+            data: { banner: bannerUrl }
+          });
+          console.log(`[BuddySpecialBot] Auto-set banner for collection: ${collection.title}`);
+        })
+        .catch(err => console.error(`[BuddySpecialBot] Auto-banner failed:`, err));
+    }
   }
 
   await ctx.react('👍').catch(() => {});
