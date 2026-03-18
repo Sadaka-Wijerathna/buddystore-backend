@@ -234,3 +234,11 @@ export const startSpecialBot = () => {
     console.error(`❌ BuddySpecialBot: Failed to start — ${err.message}`);
   });
 };
+
+// Stop
+export const stopSpecialBot = async () => {
+  if (specialBotInstance && specialBotInstance.isInited()) {
+    console.log('🛑 Stopping BuddySpecialBot...');
+    await specialBotInstance.stop();
+  }
+};

@@ -304,6 +304,13 @@ export class CategoryBot {
       console.error(`❌ ${this.name}: Failed to start — ${err.message}. Check BOT token in environment variables.`);
     });
   }
+
+  async stop() {
+    if (this.bot && this.bot.isInited()) {
+      console.log(`🛑 Stopping ${this.name}...`);
+      await this.bot.stop();
+    }
+  }
 }
 
 // ─── Bot Registry ──────────────────────────────────────────────────────────────
@@ -324,4 +331,13 @@ export const startAllCategoryBots = () => {
       bot.start();
     }
   });
+};
+
+export const stopAllCategoryBots = async () => {
+  console.log('🛑 Stopping all category bots...');
+  await Promise.all(
+    Object.values(categoryBots)
+      .filter((bot) => bot.hasToken)
+      .map((bot) => bot.stop())
+  );
 };

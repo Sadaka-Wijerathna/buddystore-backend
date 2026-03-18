@@ -116,3 +116,11 @@ export const startMainBot = async () => {
     },
   });
 };
+
+// Stop the main bot
+export const stopMainBot = async () => {
+  if (mainBot.isInited()) {
+    console.log('🤖 Stopping Main Bot...');
+    await mainBot.stop();
+  }
+};

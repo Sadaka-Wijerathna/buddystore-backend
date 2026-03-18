@@ -4,13 +4,13 @@ import app from './app';
 import config from './config';
 import { initSocket } from './lib/socket';
 import { createVideoDeliveryWorker } from './jobs/video.queue';
-import { startMainBot } from './bots/main.bot';
-import { startAllCategoryBots } from './bots/category.bot';
-import { startSpecialBot } from './bots/special.bot';
+import { startMainBot, stopMainBot } from './bots/main.bot';
+import { startAllCategoryBots, stopAllCategoryBots } from './bots/category.bot';
+import { startSpecialBot, stopSpecialBot } from './bots/special.bot';
 import prisma from './lib/prisma';
 
 async function bootstrap() {
-  // ─── Create HTTP server (Express + Socket.io share same port) ──────────────
+  // ... (lines 13-50)
   const httpServer = http.createServer(app);
 
   // ─── Initialize Socket.io ───────────────────────────────────────────────────
@@ -51,6 +51,14 @@ async function bootstrap() {
   // ─── Graceful Shutdown ──────────────────────────────────────────────────────
   const shutdown = async () => {
     console.log('\n⏳ Shutting down gracefully...');
+    
+    // Stop bots first to prevent 409 Conflict on restart
+    await Promise.all([
+      stopMainBot(),
+      stopAllCategoryBots(),
+      stopSpecialBot()
+    ]);
+
     httpServer.close();
     if (worker) worker.close();
     await prisma.$disconnect();
