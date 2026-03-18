@@ -577,7 +577,10 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
   try {
     const collections = await prisma.specialCollection.findMany({
       include: { _count: { select: { videos: true } } },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [
+        { order: 'desc' },
+        { createdAt: 'desc' }
+      ],
     });
 
     res.json({
@@ -588,6 +591,8 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
         title: c.title,
         description: c.description,
         banner: c.banner,
+        trendingTag: c.trendingTag,
+        order: c.order,
         collectionMode: c.collectionMode,
         totalVideos: c._count.videos,
         createdAt: c.createdAt,
@@ -602,7 +607,13 @@ export const getSpecialCollections = async (_req: AuthRequest, res: Response): P
 // POST /admin/special-collections  { slug, title, description? }
 export const createSpecialCollection = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { slug, title, description, trendingTag } = req.body as { slug: string; title: string; description?: string; trendingTag?: string };
+    const { slug, title, description, trendingTag, order } = req.body as { 
+      slug: string; 
+      title: string; 
+      description?: string; 
+      trendingTag?: string;
+      order?: string | number;
+    };
 
     if (!slug || !title) {
       res.status(400).json({ success: false, message: 'slug and title are required' });
@@ -628,6 +639,8 @@ export const createSpecialCollection = async (req: AuthRequest, res: Response): 
         title,
         description,
         banner: bannerUrl,
+        trendingTag: trendingTag || "Trending",
+        order: order ? parseInt(String(order), 10) : 0,
       },
     });
 
@@ -646,7 +659,12 @@ export const createSpecialCollection = async (req: AuthRequest, res: Response): 
 export const updateSpecialCollection = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const { title, description, trendingTag } = req.body as { title?: string; description?: string; trendingTag?: string };
+    const { title, description, trendingTag, order } = req.body as { 
+      title?: string; 
+      description?: string; 
+      trendingTag?: string; 
+      order?: string | number;
+    };
     
     const existing = await prisma.specialCollection.findUnique({ where: { id } });
     if (!existing) {
@@ -658,6 +676,7 @@ export const updateSpecialCollection = async (req: AuthRequest, res: Response): 
     if (title) data.title = title;
     if (description !== undefined) data.description = description;
     if (trendingTag) data.trendingTag = trendingTag;
+    if (order !== undefined) data.order = parseInt(String(order), 10);
     
     if (req.file) {
       const filename = `special-${existing.slug}-${Date.now()}`;

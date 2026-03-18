@@ -5,7 +5,10 @@ import prisma from '../lib/prisma';
 export const getPublicSpecialCollections = async (_req: Request, res: Response): Promise<void> => {
   try {
     const collections = await prisma.specialCollection.findMany({
-      orderBy: { createdAt: 'desc' }, // Newest first
+      orderBy: [
+        { order: 'desc' },
+        { createdAt: 'desc' },
+      ],
     });
 
     res.json({
