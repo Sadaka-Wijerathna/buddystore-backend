@@ -2,7 +2,7 @@ import { Bot, Context } from 'grammy';
 import https from 'https';
 import prisma from '../lib/prisma';
 import config from '../config';
-import { uploadBanner } from '../lib/cloudinary';
+import { uploadBanner, uploadThumbnail } from '../lib/cloudinary';
 
 // ─── BuddySpecialBot ──────────────────────────────────────────────────────────
 // Delivers free video collections via Telegram deep links.
@@ -51,7 +51,13 @@ async function downloadTelegramFile(fileId: string, token: string): Promise<Buff
   });
 }
 
-const specialVideoBatch: { fileId: string; collectionId: string }[] = [];
+interface SpecialVideoBatchItem {
+  fileId: string;
+  collectionId: string;
+  thumbnailFileId?: string;
+}
+
+const specialVideoBatch: SpecialVideoBatchItem[] = [];
 let specialBatchTimer: NodeJS.Timeout | null = null;
 
 async function processSpecialVideoBatch() {
@@ -61,15 +67,15 @@ async function processSpecialVideoBatch() {
   
   if (queuedVideos.length === 0) return;
 
-  // Deduplicate fileIds in memory
-  const uniqueFileIds = new Map<string, string>();
+  // Deduplicate fileIds in memory, preserving thumbnailFileId
+  const uniqueMap = new Map<string, SpecialVideoBatchItem>();
   for (const v of queuedVideos) {
-    if (!uniqueFileIds.has(v.fileId)) {
-      uniqueFileIds.set(v.fileId, v.collectionId);
+    if (!uniqueMap.has(v.fileId)) {
+      uniqueMap.set(v.fileId, v);
     }
   }
 
-  const fileIdsToCheck = Array.from(uniqueFileIds.keys());
+  const fileIdsToCheck = Array.from(uniqueMap.keys());
 
   try {
     const existing = await prisma.specialVideo.findMany({
@@ -78,13 +84,12 @@ async function processSpecialVideoBatch() {
     });
     const existingIds = new Set(existing.map(v => v.fileId));
 
-    const newVideos = Array.from(uniqueFileIds.entries())
-                           .filter(([fileId]) => !existingIds.has(fileId))
-                           .map(([fileId, collectionId]) => ({ fileId, collectionId }));
+    const newVideos = Array.from(uniqueMap.values())
+                           .filter(v => !existingIds.has(v.fileId));
 
     if (newVideos.length > 0) {
       await prisma.specialVideo.createMany({
-        data: newVideos,
+        data: newVideos.map(v => ({ fileId: v.fileId, collectionId: v.collectionId })),
         skipDuplicates: true
       });
 
@@ -102,10 +107,35 @@ async function processSpecialVideoBatch() {
         const total = await prisma.specialVideo.count({ where: { collectionId: colId } });
         console.log(`[BuddySpecialBot] Batch saved ${count} videos. (Collection ${colId} total: ${total})`);
       }
+
+      // ── Async thumbnail upload pass — fire and forget ──────────────────
+      const withThumbnails = newVideos.filter(v => v.thumbnailFileId);
+      if (withThumbnails.length > 0 && config.bots.special) {
+        uploadSpecialVideoThumbnailsAsync(withThumbnails);
+      }
     }
   } catch (e) {
     console.error(`[BuddySpecialBot] Batch save error:`, e);
   }
+}
+
+// ─── Async thumbnail upload for special videos ───────────────────────────────
+function uploadSpecialVideoThumbnailsAsync(videos: SpecialVideoBatchItem[]) {
+  Promise.allSettled(
+    videos.map(async (v) => {
+      try {
+        const buffer = await downloadTelegramFile(v.thumbnailFileId!, config.bots.special!);
+        const url = await uploadThumbnail(buffer, `thumb_special_${v.fileId.slice(0, 20)}_${Date.now()}`);
+        await prisma.specialVideo.updateMany({
+          where: { fileId: v.fileId },
+          data: { thumbnailUrl: url }
+        });
+        console.log(`[BuddySpecialBot] Thumbnail saved for special video ${v.fileId.slice(0, 12)}...`);
+      } catch (err) {
+        console.error(`[BuddySpecialBot] Thumbnail upload failed for ${v.fileId.slice(0, 12)}:`, err);
+      }
+    })
+  ).catch(() => {});
 }
 
 // ─── Helper: save a video file_id under a collection (when collectionMode ON) ─
@@ -138,8 +168,12 @@ async function queueVideoToCollection(ctx: Context, fileId: string) {
     collection = activeCollections[0];
   }
 
+  // Extract per-video thumbnail file_id
+  const thumbnailFileId = ctx.message?.video?.thumbnail?.file_id ||
+                          (ctx.message?.document as any)?.thumbnail?.file_id;
+
   // Push to memory batch
-  specialVideoBatch.push({ fileId, collectionId: collection.id });
+  specialVideoBatch.push({ fileId, collectionId: collection.id, thumbnailFileId });
   
   if (!specialBatchTimer) {
     specialBatchTimer = setTimeout(() => {

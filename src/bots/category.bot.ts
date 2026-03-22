@@ -1,6 +1,9 @@
 import { Bot, Context } from 'grammy';
+import https from 'https';
 import { Category } from '@prisma/client';
 import prisma from '../lib/prisma';
+import config from '../config';
+import { uploadThumbnail } from '../lib/cloudinary';
 
 // ─── Category Bot Manager ──────────────────────────────────────────────────────
 // Manages all 6 category bots. Each bot has collection mode that can be
@@ -12,22 +15,29 @@ interface CategoryBotConfig {
   name: string;
 }
 
+interface PendingVideo {
+  fileId: string;
+  thumbnailFileId?: string;
+}
+
 export class CategoryBot {
   public bot: Bot | null = null;
   public category: Category;
   public name: string;
   public hasToken: boolean;
+  private token: string;
   private botDbId: string | null = null;
   
   private cachedBotRecord: any = null;
   private botRecordCacheTime: number = 0;
-  private pendingVideoBatch: string[] = [];
+  private pendingVideoBatch: PendingVideo[] = [];
   private batchTimer: NodeJS.Timeout | null = null;
 
   constructor(cfg: CategoryBotConfig) {
     this.category = cfg.category;
     this.name = cfg.name;
     this.hasToken = !!cfg.token;
+    this.token = cfg.token;
 
     if (this.hasToken) {
       this.bot = new Bot(cfg.token);
@@ -93,7 +103,7 @@ export class CategoryBot {
     bot.on('message:document', async (ctx: Context) => {
       const doc = ctx.message?.document;
       if (doc && doc.mime_type?.startsWith('video/')) {
-        await this.handleDocumentVideoMessage(ctx, doc.file_id);
+        await this.handleDocumentVideoMessage(ctx, doc.file_id, (doc as any).thumbnail?.file_id);
       }
     });
 
@@ -141,7 +151,8 @@ export class CategoryBot {
     const video = ctx.message?.video;
     if (!video) return;
 
-    this.queueVideoSave(video.file_id, botRecord.id);
+    const thumbnailFileId = video.thumbnail?.file_id;
+    this.queueVideoSave(video.file_id, botRecord.id, thumbnailFileId);
     await ctx.react('👍').catch(() => {});
   }
 
@@ -152,20 +163,24 @@ export class CategoryBot {
     const videoNote = ctx.message?.video_note;
     if (!videoNote) return;
 
-    this.queueVideoSave(videoNote.file_id, botRecord.id);
+    // Video notes don't have thumbnails in the Telegram API
+    this.queueVideoSave(videoNote.file_id, botRecord.id, undefined);
     await ctx.react('👍').catch(() => {});
   }
 
-  private async handleDocumentVideoMessage(ctx: Context, fileId: string) {
+  private async handleDocumentVideoMessage(ctx: Context, fileId: string, thumbnailFileId?: string) {
     const botRecord = await this.getBotRecord();
     if (!botRecord?.collectionMode) return;
 
-    this.queueVideoSave(fileId, botRecord.id);
+    this.queueVideoSave(fileId, botRecord.id, thumbnailFileId);
     await ctx.react('👍').catch(() => {});
   }
 
-  private queueVideoSave(fileId: string, botDbId: string) {
-    this.pendingVideoBatch.push(fileId);
+  private queueVideoSave(fileId: string, botDbId: string, thumbnailFileId?: string) {
+    // Deduplicate in memory: if fileId already queued, skip
+    if (!this.pendingVideoBatch.find(v => v.fileId === fileId)) {
+      this.pendingVideoBatch.push({ fileId, thumbnailFileId });
+    }
     if (!this.batchTimer) {
       this.batchTimer = setTimeout(() => {
         this.processVideoBatch(botDbId);
@@ -175,24 +190,34 @@ export class CategoryBot {
 
   private async processVideoBatch(botDbId: string) {
     this.batchTimer = null;
-    const fileIds = [...new Set(this.pendingVideoBatch)]; // Deduplicate
+    const batch = [...this.pendingVideoBatch];
     this.pendingVideoBatch = [];
     
-    if (fileIds.length === 0) return;
+    if (batch.length === 0) return;
+
+    // Deduplicate by fileId
+    const seen = new Set<string>();
+    const uniqueBatch: PendingVideo[] = [];
+    for (const item of batch) {
+      if (!seen.has(item.fileId)) {
+        seen.add(item.fileId);
+        uniqueBatch.push(item);
+      }
+    }
 
     try {
       const existing = await prisma.videos.findMany({
-        where: { fileId: { in: fileIds } },
+        where: { fileId: { in: uniqueBatch.map(v => v.fileId) } },
         select: { fileId: true }
       });
       const existingIds = new Set(existing.map(v => v.fileId));
 
-      const newFileIds = fileIds.filter(id => !existingIds.has(id));
+      const newVideos = uniqueBatch.filter(v => !existingIds.has(v.fileId));
       
-      if (newFileIds.length > 0) {
+      if (newVideos.length > 0) {
         await prisma.videos.createMany({
-          data: newFileIds.map(fileId => ({
-            fileId,
+          data: newVideos.map(v => ({
+            fileId: v.fileId,
             category: this.category,
             botId: botDbId
           })),
@@ -201,14 +226,57 @@ export class CategoryBot {
 
         await prisma.bot.update({
           where: { id: botDbId },
-          data: { totalVideos: { increment: newFileIds.length } }
+          data: { totalVideos: { increment: newVideos.length } }
         });
 
-        console.log(`[${this.name}] Batch saved ${newFileIds.length} non-duplicate videos.`);
+        console.log(`[${this.name}] Batch saved ${newVideos.length} non-duplicate videos.`);
+
+        // ── Async thumbnail upload pass ────────────────────────────────────
+        // Download & upload thumbnails to Cloudinary, then update each video's thumbnailUrl.
+        // Done asynchronously so it never blocks the collection flow.
+        const videosWithThumbnails = newVideos.filter(v => v.thumbnailFileId);
+        if (videosWithThumbnails.length > 0 && this.token) {
+          this.uploadThumbnailsAsync(videosWithThumbnails);
+        }
       }
     } catch (e) {
       console.error(`[${this.name}] Batch save error:`, e);
     }
+  }
+
+  // ─── Async thumbnail upload — fire and forget ──────────────────────────────
+  private uploadThumbnailsAsync(videos: PendingVideo[]) {
+    Promise.allSettled(
+      videos.map(async (v) => {
+        try {
+          const buffer = await this.downloadTelegramFile(v.thumbnailFileId!);
+          const url = await uploadThumbnail(buffer, `thumb_${this.category}_${v.fileId.slice(0, 20)}_${Date.now()}`);
+          await prisma.videos.updateMany({
+            where: { fileId: v.fileId },
+            data: { thumbnailUrl: url }
+          });
+          console.log(`[${this.name}] Thumbnail saved for video ${v.fileId.slice(0, 12)}...`);
+        } catch (err) {
+          console.error(`[${this.name}] Thumbnail upload failed for ${v.fileId.slice(0, 12)}:`, err);
+        }
+      })
+    ).catch(() => {}); // swallow any outer errors
+  }
+
+  // ─── Download a file from Telegram by file_id ─────────────────────────────
+  private async downloadTelegramFile(fileId: string): Promise<Buffer> {
+    if (!this.bot) throw new Error(`${this.name} has no bot instance`);
+    const file = await this.bot.api.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${this.token}/${file.file_path}`;
+
+    return new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', reject);
+      }).on('error', reject);
+    });
   }
 
   private async getBotRecord() {
@@ -314,7 +382,6 @@ export class CategoryBot {
 }
 
 // ─── Bot Registry ──────────────────────────────────────────────────────────────
-import config from '../config';
 
 export const categoryBots: Record<Category, CategoryBot> = {
   MIXED: new CategoryBot({ token: config.bots.mixed, category: 'MIXED', name: 'BuddyMixedBot' }),

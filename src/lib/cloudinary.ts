@@ -71,4 +71,25 @@ export const uploadPdf = (buffer: Buffer, filename: string): Promise<string> => 
   });
 };
 
+/**
+ * Upload a video thumbnail buffer to Cloudinary and return the secure URL.
+ */
+export const uploadThumbnail = (buffer: Buffer, filename: string): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'buddystore/thumbnails',
+        public_id: filename,
+        resource_type: 'image',
+        transformation: [{ quality: 'auto', fetch_format: 'auto', width: 480, crop: 'limit' }],
+      },
+      (error, result) => {
+        if (error || !result) return reject(error ?? new Error('Upload failed'));
+        resolve(result.secure_url);
+      }
+    );
+    Readable.from(buffer).pipe(stream);
+  });
+};
+
 export default cloudinary;

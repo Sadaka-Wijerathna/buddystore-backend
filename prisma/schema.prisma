@@ -122,11 +122,12 @@ model BotVerifyToken {
 // Videos stored per bot
 // ─────────────────────────────────────────
 model Videos {
-  id          String   @id @default(uuid())
-  fileId      String   @unique  // Telegram file_id
-  category    Category
-  botId       String
-  collectedAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  fileId       String   @unique  // Telegram file_id
+  thumbnailUrl String?           // Cloudinary thumbnail URL (extracted on upload)
+  category     Category
+  botId        String
+  collectedAt  DateTime @default(now())
 
   bot             Bot             @relation(fields: [botId], references: [id])
   videoDeliveries VideoDelivery[]
@@ -301,6 +302,7 @@ model SpecialCollection {
 model SpecialVideo {
   id           String   @id @default(uuid())
   fileId       String   @unique   // Telegram file_id
+  thumbnailUrl String?            // Cloudinary thumbnail URL (extracted on upload)
   collectionId String
   collectedAt  DateTime @default(now())
 
