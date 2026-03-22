@@ -59,7 +59,7 @@ export const getVideoGallery = async (_req: Request, res: Response): Promise<voi
             thumbnailUrl: { not: null },
           },
           select: { thumbnailUrl: true },
-          take: 12,
+          take: 200,
           orderBy: { collectedAt: 'desc' },
         });
 
