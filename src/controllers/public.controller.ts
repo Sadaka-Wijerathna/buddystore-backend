@@ -58,7 +58,7 @@ export const getVideoGallery = async (_req: Request, res: Response): Promise<voi
             category: group.category,
             thumbnailUrl: { not: null },
           },
-          select: { thumbnailUrl: true },
+          select: { thumbnailUrl: true, collectedAt: true },
           take: 200,
           orderBy: { collectedAt: 'desc' },
         });
@@ -72,7 +72,10 @@ export const getVideoGallery = async (_req: Request, res: Response): Promise<voi
           category: group.category,
           label: CATEGORY_LABELS[group.category] ?? group.category,
           totalVideos,
-          thumbnails: thumbnailRows.map(r => r.thumbnailUrl as string),
+          thumbnails: thumbnailRows.map(r => ({
+            url: r.thumbnailUrl as string,
+            collectedAt: r.collectedAt.toISOString(),
+          })),
         };
       })
     );
