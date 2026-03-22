@@ -3,7 +3,7 @@ import { OrderStatus } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { videoDeliveryQueue } from '../jobs/video.queue';
-import { uploadBanner } from '../lib/cloudinary';
+import { uploadBanner, deleteCloudinaryImages } from '../lib/cloudinary';
 
 // ─── Get all bots with stats ───────────────────────────────────────────────
 export const getBots = async (_req: AuthRequest, res: Response): Promise<void> => {
@@ -728,12 +728,24 @@ export const clearSpecialCollectionVideos = async (req: AuthRequest, res: Respon
       return;
     }
 
+    // Collect thumbnail URLs before deleting so we can clean up Cloudinary
+    const videos = await prisma.specialVideo.findMany({
+      where: { collectionId: id },
+      select: { thumbnailUrl: true },
+    });
+    const thumbnailUrls = videos.map((v) => v.thumbnailUrl);
+
     const { count } = await prisma.specialVideo.deleteMany({ where: { collectionId: id } });
 
     await prisma.specialCollection.update({
       where: { id },
       data: { totalVideos: 0 },
     });
+
+    // Fire-and-forget Cloudinary cleanup (non-blocking, non-fatal)
+    deleteCloudinaryImages(thumbnailUrls).catch((err) =>
+      console.error('[clearSpecialCollectionVideos] Cloudinary cleanup error:', err)
+    );
 
     res.json({
       success: true,
@@ -751,8 +763,27 @@ export const deleteSpecialCollection = async (req: AuthRequest, res: Response): 
   try {
     const id = String(req.params.id);
 
+    // Collect thumbnail URLs + banner before deleting DB records
+    const [videos, collection] = await Promise.all([
+      prisma.specialVideo.findMany({
+        where: { collectionId: id },
+        select: { thumbnailUrl: true },
+      }),
+      prisma.specialCollection.findUnique({ where: { id }, select: { banner: true } }),
+    ]);
+
+    const cloudinaryUrls = [
+      ...videos.map((v) => v.thumbnailUrl),
+      collection?.banner,
+    ];
+
     await prisma.specialVideo.deleteMany({ where: { collectionId: id } });
     await prisma.specialCollection.delete({ where: { id } });
+
+    // Fire-and-forget Cloudinary cleanup (non-blocking, non-fatal)
+    deleteCloudinaryImages(cloudinaryUrls).catch((err) =>
+      console.error('[deleteSpecialCollection] Cloudinary cleanup error:', err)
+    );
 
     res.json({ success: true, message: 'Collection deleted' });
   } catch (error) {

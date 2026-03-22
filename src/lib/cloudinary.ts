@@ -92,4 +92,36 @@ export const uploadThumbnail = (buffer: Buffer, filename: string): Promise<strin
   });
 };
 
+/**
+ * Delete multiple Cloudinary assets by their secure URLs.
+ * Extracts the public_id from each URL and deletes in batches of 100.
+ */
+export const deleteCloudinaryImages = async (urls: (string | null | undefined)[]): Promise<void> => {
+  // Filter out nulls and extract public_ids
+  const publicIds = urls
+    .filter((url): url is string => !!url)
+    .map((url) => {
+      // Cloudinary URL format:
+      //   https://res.cloudinary.com/<cloud>/image/upload/vXXXX/<folder>/<public_id>.<ext>
+      // We need everything after "/upload/vXXXX/" (or "/upload/") up to (but not including) the extension.
+      const match = url.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-z]+)?$/i);
+      return match ? match[1] : null;
+    })
+    .filter((id): id is string => !!id);
+
+  if (publicIds.length === 0) return;
+
+  // Cloudinary API allows max 100 ids per request
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < publicIds.length; i += BATCH_SIZE) {
+    const batch = publicIds.slice(i, i + BATCH_SIZE);
+    try {
+      await cloudinary.api.delete_resources(batch);
+      console.log(`[Cloudinary] Deleted ${batch.length} asset(s)`);
+    } catch (err) {
+      console.error(`[Cloudinary] Failed to delete batch starting at ${i}:`, err);
+    }
+  }
+};
+
 export default cloudinary;
