@@ -144,13 +144,21 @@ export const clearBotVideos = async (req: AuthRequest, res: Response): Promise<v
         botId: id,
         videoDeliveries: { none: {} }, // no delivery records = safe to delete
       },
-      select: { id: true },
+      select: { id: true, thumbnailUrl: true },
     });
 
     const videoIds = undeliveredVideos.map(v => v.id);
+    const thumbnailUrls = undeliveredVideos.map(v => v.thumbnailUrl).filter(Boolean) as string[];
 
     if (videoIds.length > 0) {
       await prisma.videos.deleteMany({ where: { id: { in: videoIds } } });
+
+      // Fire and forget Cloudinary deletion
+      if (thumbnailUrls.length > 0) {
+        deleteCloudinaryImages(thumbnailUrls).catch(err => {
+          console.error('[clearBotVideos] Cloudinary cleanup error:', err);
+        });
+      }
     }
 
     // Recalculate the real video count left in the library
