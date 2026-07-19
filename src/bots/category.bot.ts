@@ -1,0 +1,548 @@
+import { Bot, Context } from 'grammy';
+import https from 'https';
+import { Category } from '@prisma/client';
+import prisma from '../lib/prisma';
+import config from '../config';
+import { uploadThumbnail } from '../lib/cloudinary';
+
+// ─── Global Rate Limiter (Outgoing Sends Only) ────────────────────────────────
+// Limits outgoing sendVideo calls in sendVideosToUser to stay under Telegram's
+// 30 messages/second global ceiling. Capped at 20/sec to give a generous margin.
+//
+// NOTE: With webhook mode this limiter is NOT involved in receiving updates — it
+// only throttles the outgoing video delivery loop in sendVideosToUser().
+//
+// Restart-burst fix: tokens start at HALF capacity so a cold-restart scenario
+// never immediately fires a full-burst of sends into the same rate window.
+const GLOBAL_RATE_LIMIT = 20; // max outgoing messages per second across all bots
+let globalTokens = Math.floor(GLOBAL_RATE_LIMIT / 2); // start at half to absorb restart bursts
+let lastRefillTime = Date.now();
+
+async function acquireRateToken(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastRefillTime;
+  if (elapsed >= 1000) {
+    globalTokens = GLOBAL_RATE_LIMIT;
+    lastRefillTime = now;
+  }
+  if (globalTokens > 0) {
+    globalTokens--;
+    return;
+  }
+  // No tokens left — wait until the next refill window
+  const waitMs = 1000 - (Date.now() - lastRefillTime);
+  await new Promise((r) => setTimeout(r, Math.max(waitMs, 0)));
+  globalTokens = GLOBAL_RATE_LIMIT - 1;
+  lastRefillTime = Date.now();
+}
+
+// ─── Category Bot Manager ──────────────────────────────────────────────────────
+// Manages all category bots. Each bot has collection mode that can be
+// toggled by admin. When ON, any video sent to the bot is saved by its file_id.
+
+interface CategoryBotConfig {
+  token: string;
+  category: Category;
+  name: string;
+}
+
+interface PendingVideo {
+  fileId: string;
+  telegramUniqueId: string;
+  thumbnailFileId?: string;
+}
+
+export class CategoryBot {
+  public bot: Bot | null = null;
+  public category: Category;
+  public name: string;
+  public hasToken: boolean;
+  private token: string;
+  private botDbId: string | null = null;
+  
+  private cachedBotRecord: any = null;
+  private botRecordCacheTime: number = 0;
+  private pendingVideoBatch: PendingVideo[] = [];
+  private batchTimer: NodeJS.Timeout | null = null;
+
+  constructor(cfg: CategoryBotConfig) {
+    this.category = cfg.category;
+    this.name = cfg.name;
+    this.hasToken = !!cfg.token;
+    this.token = cfg.token;
+
+    if (this.hasToken) {
+      this.bot = new Bot(cfg.token);
+      
+      // Safety: Add global error handler to prevent bot/network errors from crashing the app
+      this.bot.catch((err) => {
+        console.error(`[${this.name}] ❌ Global Bot Error:`, err);
+      });
+
+      this.setupHandlers();
+    } else {
+      console.warn(`⚠️  ${cfg.name}: No token set — bot not started`);
+    }
+  }
+
+  private setupHandlers() {
+    const bot = this.bot!; // Safe: only called when bot is initialized
+
+    // ── /start — verify BotVerifyToken (checkout flow) ───────────────────
+    bot.command('start', async (ctx: Context) => {
+      const from = ctx.from;
+      if (!from) return;
+
+      const payload = ctx.match as string | undefined; // text after /start
+
+      // If a token payload was sent, it's a checkout verification
+      if (payload && payload.length > 8) {
+        try {
+          const verifyRecord = await prisma.botVerifyToken.findUnique({
+            where: { token: payload },
+          });
+
+          if (verifyRecord && !verifyRecord.verified && new Date() < verifyRecord.expiresAt) {
+            await prisma.botVerifyToken.update({
+              where: { token: payload },
+              data: { verified: true },
+            });
+            console.log(`[${this.name}] ✅ Verified token for category ${verifyRecord.category}`);
+
+            await ctx.reply(
+              `✅ *${this.name} Verified!*\n\nGo back to the BuddyStore checkout page — it will detect this automatically! 🎉`,
+              { parse_mode: 'Markdown' }
+            );
+            return;
+          }
+        } catch (e) {
+          console.error(`[${this.name}] token verify error:`, e);
+        }
+      }
+
+      // Regular /start (no payload or unknown payload)
+      await ctx.reply(
+        `👋 Hello ${from.first_name}! Welcome to *${this.name}*.\n\nVisit BuddyStore to place an order and get videos delivered here! 🎬`,
+        { parse_mode: 'Markdown' }
+      );
+    });
+
+    // Handle videos sent to the bot (only in collection mode)
+    bot.on('message:video', async (ctx: Context) => {
+      await this.handleVideoMessage(ctx);
+    });
+
+    // Handle video notes
+    bot.on('message:video_note', async (ctx: Context) => {
+      await this.handleVideoNoteMessage(ctx);
+    });
+
+    // Handle documents that are videos
+    bot.on('message:document', async (ctx: Context) => {
+      const doc = ctx.message?.document;
+      if (doc && doc.mime_type?.startsWith('video/')) {
+        await this.handleDocumentVideoMessage(ctx, doc.file_id, doc.file_unique_id, (doc as any).thumbnail?.file_id);
+      }
+    });
+
+    bot.command('status', async (ctx: Context) => {
+      const botRecord = await this.getBotRecord();
+      if (!botRecord) {
+        await ctx.reply('Bot not configured in database.');
+        return;
+      }
+      await ctx.reply(
+        `📊 *${this.name} Status*\n\n` +
+        `Collection Mode: ${botRecord.collectionMode ? '🟢 ON' : '🔴 OFF'}\n` +
+        `Total Videos: ${botRecord.totalVideos}`,
+        { parse_mode: 'Markdown' }
+      );
+    });
+
+    // ── Catch-all: record any user who messages this bot ─────────────────
+    // This handles users who opened the bot before the /start handler existed
+    bot.on('message', async (ctx: Context) => {
+      const from = ctx.from;
+      if (!from) return;
+
+      const telegramId = String(from.id);
+
+      try {
+        const botRecord = await this.getBotRecord();
+        if (botRecord && !botRecord.startedUserIds.includes(telegramId)) {
+          await prisma.bot.update({
+            where: { id: botRecord.id },
+            data: { startedUserIds: { push: telegramId } },
+          });
+          console.log(`[${this.name}] Recorded user ${telegramId} as started`);
+        }
+      } catch (e) {
+        console.error(`[${this.name}] catch-all tracking error:`, e);
+      }
+    });
+  }
+
+  private async handleVideoMessage(ctx: Context) {
+    const botRecord = await this.getBotRecord();
+    if (!botRecord?.collectionMode) return; // Ignore if collection mode is off
+
+    const video = ctx.message?.video;
+    if (!video) return;
+
+    const thumbnailFileId = video.thumbnail?.file_id;
+    this.queueVideoSave(video.file_id, video.file_unique_id, botRecord.id, thumbnailFileId);
+    await ctx.react('👍').catch(() => {});
+  }
+
+  private async handleVideoNoteMessage(ctx: Context) {
+    const botRecord = await this.getBotRecord();
+    if (!botRecord?.collectionMode) return;
+
+    const videoNote = ctx.message?.video_note;
+    if (!videoNote) return;
+
+    // Video notes don't have thumbnails in the Telegram API
+    this.queueVideoSave(videoNote.file_id, videoNote.file_unique_id, botRecord.id, undefined);
+    await ctx.react('👍').catch(() => {});
+  }
+
+  private async handleDocumentVideoMessage(ctx: Context, fileId: string, uniqueId: string, thumbnailFileId?: string) {
+    const botRecord = await this.getBotRecord();
+    if (!botRecord?.collectionMode) return;
+
+    this.queueVideoSave(fileId, uniqueId, botRecord.id, thumbnailFileId);
+    await ctx.react('👍').catch(() => {});
+  }
+
+  private queueVideoSave(fileId: string, telegramUniqueId: string, botDbId: string, thumbnailFileId?: string) {
+    // Deduplicate in memory: if uniqueId already queued, skip
+    if (!this.pendingVideoBatch.find(v => v.telegramUniqueId === telegramUniqueId)) {
+      this.pendingVideoBatch.push({ fileId, telegramUniqueId, thumbnailFileId });
+    }
+    if (!this.batchTimer) {
+      this.batchTimer = setTimeout(() => {
+        this.processVideoBatch(botDbId);
+      }, 3000); // Process batch 3 seconds after the first video
+    }
+  }
+
+  private async processVideoBatch(botDbId: string) {
+    this.batchTimer = null;
+    const batch = [...this.pendingVideoBatch];
+    this.pendingVideoBatch = [];
+    
+    if (batch.length === 0) return;
+
+    // Deduplicate by telegramUniqueId
+    const seen = new Set<string>();
+    const uniqueBatch: PendingVideo[] = [];
+    for (const item of batch) {
+      if (!seen.has(item.telegramUniqueId)) {
+        seen.add(item.telegramUniqueId);
+        uniqueBatch.push(item);
+      }
+    }
+
+    try {
+      const existing = await prisma.videos.findMany({
+        where: { telegramUniqueId: { in: uniqueBatch.map(v => v.telegramUniqueId) } },
+        select: { telegramUniqueId: true }
+      });
+      const existingIds = new Set(existing.map(v => v.telegramUniqueId));
+
+      const newVideos = uniqueBatch.filter(v => !existingIds.has(v.telegramUniqueId));
+      
+      if (newVideos.length > 0) {
+        await prisma.videos.createMany({
+          data: newVideos.map(v => ({
+            fileId: v.fileId,
+            telegramUniqueId: v.telegramUniqueId,
+            category: this.category,
+            botId: botDbId
+          })),
+          skipDuplicates: true
+        });
+
+        await prisma.bot.update({
+          where: { id: botDbId },
+          data: { totalVideos: { increment: newVideos.length } }
+        });
+
+        console.log(`[${this.name}] Batch saved ${newVideos.length} non-duplicate videos.`);
+
+        // ── Async thumbnail upload pass ────────────────────────────────────
+        // Download & upload thumbnails to Cloudinary, then update each video's thumbnailUrl.
+        // Done asynchronously so it never blocks the collection flow.
+        const videosWithThumbnails = newVideos.filter(v => v.thumbnailFileId);
+        if (videosWithThumbnails.length > 0 && this.token) {
+          this.uploadThumbnailsAsync(videosWithThumbnails);
+        }
+      }
+    } catch (e) {
+      console.error(`[${this.name}] Batch save error:`, e);
+    }
+  }
+
+  // ─── Async thumbnail upload — fire and forget ──────────────────────────────
+  private uploadThumbnailsAsync(videos: PendingVideo[]) {
+    const CONCURRENCY = 5;
+    const queue = [...videos];
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const v = queue.shift();
+        if (!v || !v.thumbnailFileId) continue;
+
+        try {
+          const buffer = await this.downloadTelegramFile(v.thumbnailFileId);
+          const url = await uploadThumbnail(buffer, `thumb_${this.category}_${v.fileId.slice(0, 20)}_${Date.now()}`);
+          await prisma.videos.updateMany({
+            where: { fileId: v.fileId },
+            data: { thumbnailUrl: url }
+          });
+          console.log(`[${this.name}] Thumbnail saved for video ${v.fileId.slice(0, 12)}...`);
+        } catch (err) {
+          console.error(`[${this.name}] Thumbnail upload failed for ${v.fileId.slice(0, 12)}:`, err);
+        }
+      }
+    };
+
+    // Fire off parallel workers. We don't await because this is a background task.
+    for (let i = 0; i < Math.min(CONCURRENCY, queue.length); i++) {
+      worker();
+    }
+  }
+
+  // ─── Download a file from Telegram by file_id ─────────────────────────────
+  private async downloadTelegramFile(fileId: string): Promise<Buffer> {
+    if (!this.bot) throw new Error(`${this.name} has no bot instance`);
+    const file = await this.bot.api.getFile(fileId);
+    const url = `https://api.telegram.org/file/bot${this.token}/${file.file_path}`;
+
+    return new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', reject);
+      }).on('error', reject);
+    });
+  }
+
+  private async getBotRecord() {
+    const now = Date.now();
+    if (this.cachedBotRecord && now < this.botRecordCacheTime) {
+      return this.cachedBotRecord;
+    }
+    
+    let record;
+    if (this.botDbId) {
+      record = await prisma.bot.findUnique({ where: { id: this.botDbId } });
+    } else {
+      record = await prisma.bot.findUnique({ where: { category: this.category } });
+    }
+    
+    if (record) {
+      this.botDbId = record.id;
+      this.cachedBotRecord = record;
+      this.botRecordCacheTime = now + 10000; // 10 seconds cache
+    }
+    return record;
+  }
+
+  // ─── Send videos to a user for an order ────────────────────────────────────
+  // Returns number of successfully sent videos
+  async sendVideosToUser(
+    orderId: string,
+    userId: string,
+    userTelegramId: bigint,
+    count: number,
+    onProgress: (sent: number, total: number) => void
+  ): Promise<number> {
+    const botRecord = await this.getBotRecord();
+    if (!botRecord) throw new Error(`Bot record not found for category: ${this.category}`);
+
+    // Get videos that haven't been sent to this user yet
+    const videos = await prisma.videos.findMany({
+      where: {
+        category: this.category,
+        videoDeliveries: {
+          none: { userId },  // Not already sent to this user
+        },
+      },
+      take: count,
+    });
+
+    if (videos.length === 0) {
+      throw new Error(`No available videos for category: ${this.category}`);
+    }
+
+    let sent = 0;
+
+    const useGroups = videos.length > 5;
+    const chunkSize = useGroups ? 10 : 1;
+
+    for (let i = 0; i < videos.length; i += chunkSize) {
+      const chunk = videos.slice(i, i + chunkSize);
+
+      // Unrecoverable error descriptions — stop entire delivery
+      const isUnrecoverable = (desc: string) =>
+        desc.includes('chat not found') ||
+        desc.includes('bot was blocked by the user') ||
+        desc.includes('user is deactivated') ||
+        desc.includes('have no rights to send');
+
+      // Attempt send with up to 3 retries for transient errors
+      let success = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (!this.bot) throw new Error(`${this.name} has no token configured`);
+          
+          if (chunk.length === 1) {
+            const video = chunk[0];
+            await this.bot.api.sendVideo(Number(userTelegramId), video.fileId, {
+              protect_content: true,
+              disable_notification: true
+            });
+          } else {
+            const mediaGroup = chunk.map(v => ({
+              type: 'video',
+              media: v.fileId
+            }));
+            await this.bot.api.sendMediaGroup(Number(userTelegramId), mediaGroup as any, {
+              protect_content: true,
+              disable_notification: true
+            });
+          }
+          
+          success = true;
+          break;
+        } catch (error: any) {
+          const description: string = error?.description ?? '';
+          const errorCode: number = error?.error_code ?? 0;
+
+          // Unrecoverable — notify the user and throw
+          if (isUnrecoverable(description)) {
+            // Send friendly message to the user before failing
+            try {
+              await this.bot?.api.sendMessage(
+                Number(userTelegramId),
+                `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
+                { parse_mode: 'Markdown' }
+              );
+            } catch (_) { /* ignore if we can't reach the user */ }
+            throw new Error(
+              `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
+              `The user likely never started the bot (@${this.name}).`
+            );
+          }
+
+          // 429 Too Many Requests — respect retry_after from Telegram
+          if (errorCode === 429) {
+            const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
+            console.warn(`[${this.name}] Rate limited (429). Waiting ${retryAfterSec}s before retry...`);
+            await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
+            continue; // retry same chunk
+          }
+
+          // Transient error — wait 2s and retry
+          console.warn(`[${this.name}] Attempt ${attempt}/3 failed for chunk at index ${i}: ${description}`);
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        }
+      }
+
+      if (success) {
+        // Record the delivery for all videos in chunk
+        await prisma.videoDelivery.createMany({
+          data: chunk.map(v => ({ orderId, videoId: v.id, userId })),
+          skipDuplicates: true
+        });
+
+        sent += chunk.length;
+        onProgress(sent, videos.length);
+      } else {
+        console.error(`[${this.name}] Skipping chunk at index ${i} after 3 failed attempts`);
+      }
+
+      // Acquire a global rate token (shared across all bots, max 20/sec total outgoing)
+      await acquireRateToken();
+      // Per-chat limit: also wait before next chunk
+      await new Promise((r) => setTimeout(r, useGroups ? 1500 : 1000));
+    }
+
+    return sent;
+  }
+
+  // ─── Webhook Registration ─────────────────────────────────────────────────
+  // Registers this bot's webhook with Telegram. Called once on server startup.
+  // No long-polling — Telegram pushes updates to our Express handler.
+  async registerWebhook(baseUrl: string, slug: string, secret?: string): Promise<void> {
+    if (!this.bot) {
+      console.warn(`⚠️  ${this.name}: Skipping webhook registration — no token`);
+      return;
+    }
+    const webhookUrl = `${baseUrl}/webhooks/${slug}`;
+    console.log(`🤖 Registering ${this.name} webhook → ${webhookUrl}`);
+    try {
+      await this.bot.api.setWebhook(webhookUrl, {
+        drop_pending_updates: true,
+        ...(secret ? { secret_token: secret } : {}),
+      });
+      console.log(`✅ ${this.name} webhook registered`);
+    } catch (err: any) {
+      console.error(`❌ ${this.name}: Failed to register webhook — ${err.message}`);
+    }
+  }
+
+  // ─── Webhook Deregistration ───────────────────────────────────────────────
+  async deregisterWebhook(): Promise<void> {
+    if (!this.bot) return;
+    try {
+      await this.bot.api.deleteWebhook({ drop_pending_updates: true });
+      console.log(`🤖 ${this.name} webhook deregistered`);
+    } catch (err: any) {
+      console.error(`❌ ${this.name}: Failed to deregister webhook — ${err.message}`);
+    }
+  }
+}
+
+// ─── Bot Registry ──────────────────────────────────────────────────────────────
+
+export const categoryBots: Record<Category, CategoryBot> = {
+  MIXED:       new CategoryBot({ token: config.bots.mixed,      category: 'MIXED',       name: 'Buddymixed1Bot'    }),
+  MOM_SON:     new CategoryBot({ token: config.bots.momSon,     category: 'MOM_SON',     name: 'BuddyMs1Bot'       }),
+  SRI_LANKAN:  new CategoryBot({ token: config.bots.sriLankan,  category: 'SRI_LANKAN',  name: 'BuddySLBot'        }),
+  CCTV:        new CategoryBot({ token: config.bots.cctv,       category: 'CCTV',        name: 'Buddycctv1Bot'     }),
+  PUBLIC:      new CategoryBot({ token: config.bots.public,     category: 'PUBLIC',      name: 'BuddyPublicBot'    }),
+  RAPE:        new CategoryBot({ token: config.bots.rape,       category: 'RAPE',        name: 'BuddyRkpeBot'      }),
+};
+
+// ─── Slug map: category → URL path segment ─────────────────────────────────
+// Must match the route paths registered in webhook.routes.ts
+const categorySlugMap: Record<Category, string> = {
+  MIXED:      'mixed',
+  MOM_SON:    'mom-son',
+  SRI_LANKAN: 'sri-lankan',
+  CCTV:       'cctv',
+  PUBLIC:     'public',
+  RAPE:       'rape',
+};
+
+export const registerAllCategoryBotWebhooks = async (baseUrl: string, secret?: string): Promise<void> => {
+  for (const [category, bot] of Object.entries(categoryBots)) {
+    if (bot.hasToken) {
+      await bot.registerWebhook(baseUrl, categorySlugMap[category as Category], secret);
+    }
+  }
+};
+
+export const deregisterAllCategoryBotWebhooks = async (): Promise<void> => {
+  console.log('🛑 Deregistering all category bot webhooks...');
+  await Promise.all(
+    Object.values(categoryBots)
+      .filter((bot) => bot.hasToken)
+      .map((bot) => bot.deregisterWebhook())
+  );
+};

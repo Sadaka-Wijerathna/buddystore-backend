@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: buddystore-backend
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install --include=dev && npx prisma generate && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: NODE_ENV
+        value: "production"
+      - key: FRONTEND_URL
+        value: "https://buddystore.vercel.app"
+      - key: UPLOAD_DIR
+        value: "uploads"
+      - key: PUBLIC_CHANNEL_ID
+        value: "@BuddySellingsC"
+      - key: JWT_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: MAIN_BOT_TOKEN
+        sync: false
+      - key: BOT_MIXED_TOKEN
+        sync: false
+      - key: BOT_MOM_SON_TOKEN
+        sync: false
+      - key: BOT_SRI_LANKAN_TOKEN
+        sync: false
+      - key: BOT_CCTV_TOKEN
+        sync: false
+      - key: BOT_PUBLIC_TOKEN
+        sync: false
+      - key: BOT_RAPE_TOKEN
+        sync: false
+      - key: BOT_SPECIAL_TOKEN
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
