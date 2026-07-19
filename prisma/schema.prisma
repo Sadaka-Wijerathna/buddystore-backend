@@ -1,0 +1,552 @@
+// Prisma Schema for BuddyStore Backend
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────
+// Users
+// ─────────────────────────────────────────
+model User {
+  id               String    @id @default(uuid())
+  telegramId       BigInt    @unique
+  telegramUsername String    @unique
+  firstName        String
+  lastName         String?
+  languageCode     String?
+  isBot            Boolean   @default(false)
+  passwordHash     String
+  role             Role      @default(USER)
+  adminRole        String?   // "SUPER_ADMIN", "ORDER_MANAGER", etc.
+  isBanned         Boolean   @default(false)
+  bannedAt         DateTime?
+  tokenVersion     Int       @default(0)
+  lastIpAddress    String?
+  deviceType       String?
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Affiliate & Wallet System
+  walletBalance      Float               @default(0)
+  referralCode       String?             @unique
+  referredById       String?
+  referredBy         User?               @relation("UserToReferred", fields: [referredById], references: [id])
+  referredUsers      User[]              @relation("UserToReferred")
+  walletTransactions WalletTransaction[]
+
+  orders            Order[]
+  videoDeliveries   VideoDelivery[]
+  videoDeliveryJobs VideoDeliveryJob[]
+  botVerifyTokens   BotVerifyToken[]
+  reviews           Review[]
+  notifications     Notification[]
+  pushSubscriptions PushSubscription[]
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ─────────────────────────────────────────
+// Bank Accounts (for checkout payment details)
+// ─────────────────────────────────────────
+model BankAccount {
+  id            String   @id @default(uuid())
+  bankName      String
+  accountName   String
+  accountNumber String
+  branch        String?
+  isActive      Boolean  @default(true)
+  order         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("bank_accounts")
+}
+
+
+// ─────────────────────────────────────────
+// Banned IPs (for anti-cheat)
+// ─────────────────────────────────────────
+model BannedIp {
+  id        String   @id @default(uuid())
+  ip        String   @unique
+  reason    String?
+  bannedBy  String? // admin userId who banned it
+  createdAt DateTime @default(now())
+
+  @@map("banned_ips")
+}
+
+// ─────────────────────────────────────────
+// Registration Tokens (for bot verification)
+// ─────────────────────────────────────────
+model RegistrationToken {
+  id               String   @id @default(uuid())
+  token            String   @unique
+  telegramUsername String
+  telegramId       BigInt?
+  firstName        String?
+  lastName         String?
+  languageCode     String?
+  verified         Boolean  @default(false)
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+
+  @@map("registration_tokens")
+}
+
+// ─────────────────────────────────────────
+// Password Reset OTPs (sent via Telegram)
+// ─────────────────────────────────────────
+model PasswordResetOtp {
+  id               String   @id @default(uuid())
+  telegramUsername String
+  otp              String
+  expiresAt        DateTime
+  used             Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@map("password_reset_otps")
+}
+
+// ─────────────────────────────────────────
+// Bots (one per category)
+// ─────────────────────────────────────────
+model Bot {
+  id             String   @id @default(uuid())
+  name           String   @unique
+  category       Category @unique
+  collectionMode Boolean  @default(false)
+  totalVideos    Int      @default(0)
+  minVideoCount  Int      @default(10)
+  pricePerVideo  Float    @default(5)
+  bannerUrl      String? // Cloudinary URL for the category preview
+  startedUserIds String[] @default([]) // Telegram user IDs that started this bot
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  videos Videos[]
+  orders Order[]
+
+  @@map("bots")
+}
+
+enum Category {
+  MIXED
+  MOM_SON
+  SRI_LANKAN
+  CCTV
+  PUBLIC
+  RAPE
+}
+
+// ─────────────────────────────────────────
+// One-time tokens for verifying per-bot start (used in checkout)
+// ─────────────────────────────────────────
+model BotVerifyToken {
+  id        String   @id @default(uuid())
+  token     String   @unique @default(cuid())
+  userId    String
+  category  Category
+  verified  Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("bot_verify_tokens")
+}
+
+// ─────────────────────────────────────────
+// Temporary Stars Payment Attempts
+// ─────────────────────────────────────────
+model StarsPaymentAttempt {
+  id                 String   @id @default(uuid())
+  userId             String
+  items              Json     // Stores [{category, videoCount, priceAmount, botId}, ...]
+  paid               Boolean  @default(false)
+  starsTransactionId String?
+  createdAt          DateTime @default(now())
+ 
+  @@map("stars_payment_attempts")
+}
+
+// ─────────────────────────────────────────
+// Videos stored per bot
+// ─────────────────────────────────────────
+model Videos {
+  id               String   @id @default(uuid())
+  fileId           String   @unique // Telegram file_id
+  telegramUniqueId String?  @unique // Telegram file_unique_id (prevents duplicates)
+  thumbnailUrl     String? // Cloudinary thumbnail URL (extracted on upload)
+  category         Category
+  botId            String
+  collectedAt      DateTime @default(now())
+
+  bot             Bot             @relation(fields: [botId], references: [id])
+  videoDeliveries VideoDelivery[]
+
+  @@index([category, collectedAt])
+  @@map("videos")
+}
+
+// ─────────────────────────────────────────
+// Orders
+// ─────────────────────────────────────────
+model Order {
+  id          String      @id @default(uuid())
+  userId      String
+  botId       String
+  category    Category
+  videoCount  Int
+  priceAmount Float       @default(0)
+  receiptUrl  String?
+  paymentMethod PaymentMethod @default(BANK)
+  txHash      String?     @unique // For Crypto TXID verification
+  starsAmount Int?        // Amount in Telegram Stars
+  starsTransactionId String? @unique // Telegram payment ID
+  cryptoAmount Float?     // Amount in Crypto currency
+  cryptoCurrency String?  // "USDT", "TON", etc.
+  network      String?    // "TRC20", "BEP20", etc.
+  status      OrderStatus @default(PENDING)
+  confirmedAt DateTime?
+  completedAt DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  recoverySent Boolean     @default(false)
+
+  user              User               @relation(fields: [userId], references: [id])
+  bot               Bot                @relation(fields: [botId], references: [id])
+  videoDeliveries   VideoDelivery[]
+  videoDeliveryJobs VideoDeliveryJob[]
+  review            Review?
+
+  @@map("orders")
+}
+
+enum OrderStatus {
+  INITIATED // User clicked Buy but hasn't uploaded receipt
+  PENDING // Receipt uploaded OR Crypto TXID submitted, waiting for verification
+  CONFIRMED // Admin/Auto-verifier confirmed payment, bot will start
+  DELIVERING // Bot is actively sending videos
+  COMPLETED // All videos sent
+  REJECTED // Admin rejected the order
+}
+
+enum PaymentMethod {
+  BANK
+  CRYPTO
+  WALLET
+  STARS
+}
+
+// ─────────────────────────────────────────
+// Video Deliveries (tracks what was sent to whom)
+// ─────────────────────────────────────────
+model VideoDelivery {
+  id          String   @id @default(uuid())
+  orderId     String
+  videoId     String
+  userId      String
+  deliveredAt DateTime @default(now())
+
+  order Order  @relation(fields: [orderId], references: [id])
+  video Videos @relation(fields: [videoId], references: [id])
+  user  User   @relation(fields: [userId], references: [id])
+
+  @@unique([videoId, userId]) // A video can only be sent once per user
+  @@map("video_deliveries")
+}
+
+// ─────────────────────────────────────────
+// Postgres Background Queue for Video Delivery
+// ─────────────────────────────────────────
+model VideoDeliveryJob {
+  id             String   @id @default(uuid())
+  orderId        String
+  userId         String
+  userTelegramId BigInt
+  category       Category
+  videoCount     Int
+
+  status   DeliveryJobStatus @default(PENDING)
+  attempts Int               @default(0)
+  progress Int               @default(0)
+  error    String?
+
+  lockedUntil DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id])
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@map("video_delivery_jobs")
+}
+
+enum DeliveryJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ─────────────────────────────────────────
+// Reviews
+// ─────────────────────────────────────────
+model Review {
+  id        String       @id @default(uuid())
+  userId    String
+  orderId   String?      @unique
+  rating    Int // 1-5
+  text      String?
+  status    ReviewStatus @default(PENDING)
+  createdAt DateTime     @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@map("reviews")
+}
+
+// ─── AFFILIATE & WALLET SYSTEM ────────────────────────────────────────────────
+
+model WalletTransaction {
+  id          String          @id @default(uuid())
+  userId      String
+  amount      Float
+  type        TransactionType
+  description String?
+  createdAt   DateTime        @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("wallet_transactions")
+}
+
+enum TransactionType {
+  EARNED
+  SPENT
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ─────────────────────────────────────────
+// Special Bot — Free video collections delivered via deep link
+// ─────────────────────────────────────────
+// ─────────────────────────────────────────
+// Free PDFs
+// ─────────────────────────────────────────
+
+model PdfCategory {
+  id        String   @id @default(uuid())
+  slug      String   @unique // "stories", "comics"
+  title     String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  subcategories PdfSubCategory[]
+  directSeries  PdfSeries[] // Series attached directly (no subcategory)
+
+  @@map("pdf_categories")
+}
+
+model PdfSubCategory {
+  id         String      @id @default(uuid())
+  slug       String      @unique // "expert", "mother_son", etc.
+  title      String
+  order      Int         @default(0)
+  categoryId String
+  category   PdfCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  series PdfSeries[]
+
+  @@map("pdf_subcategories")
+}
+
+model PdfSeries {
+  id            String          @id @default(uuid())
+  slug          String          @unique // "janeleyen", "mayavi"
+  title         String
+  keywords      String?
+  bannerUrl     String? // Cloudinary URL
+  // Attach to a subcategory OR directly to a category (one must be set)
+  subcategoryId String?
+  categoryId    String?
+  subcategory   PdfSubCategory? @relation(fields: [subcategoryId], references: [id], onDelete: Cascade)
+  category      PdfCategory?    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  pdfs          FreePdf[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@map("pdf_series")
+}
+
+model FreePdf {
+  id        String    @id @default(uuid())
+  title     String
+  fileUrl   String // Cloudinary raw URL
+  fileSize  String? // e.g. "345 KB"
+  order     Int       @default(0) // for sorting within a series
+  seriesId  String
+  series    PdfSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+
+  @@index([seriesId, order])
+  @@map("free_pdfs")
+}
+
+// ─────────────────────────────────────────
+model SpecialCollection {
+  id             String   @id @default(uuid())
+  slug           String   @unique // e.g. "anu_kanu" — used in deep link
+  title          String // e.g. "Anu Kanu"
+  keywords       String?
+  banner         String? // URL (uploaded manually to admin)
+  trendingTag    String   @default("Trending")
+  collectionMode Boolean  @default(false) // When ON, admin can upload videos
+  totalVideos    Int      @default(0)
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  videos SpecialVideo[]
+
+  @@map("special_collections")
+}
+
+model SpecialVideo {
+  id               String   @id @default(uuid())
+  fileId           String   @unique // Telegram file_id
+  telegramUniqueId String?  @unique // Telegram file_unique_id (prevents duplicates)
+  thumbnailUrl     String? // Cloudinary thumbnail URL (extracted on upload)
+  mediaType        String   @default("video") // "video" | "image"
+  collectionId     String
+  collectedAt      DateTime @default(now())
+
+  collection SpecialCollection @relation(fields: [collectionId], references: [id])
+
+  @@index([collectionId, collectedAt])
+  @@index([collectionId, mediaType])
+  @@map("special_videos")
+}
+
+// ─────────────────────────────────────────
+// Application Settings
+// ─────────────────────────────────────────
+model Setting {
+  key   String @id
+  value String
+
+  @@map("settings")
+}
+
+// ─────────────────────────────────────────
+// Notifications
+// ─────────────────────────────────────────
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String?  // Nullable for global notifications
+  type      String   // e.g., 'order_placed', 'wallet_bonus', 'new_trending', 'new_pdf', 'profile_update', 'system'
+  title     String
+  desc      String
+  readIds   String[] @default([]) // For global notifications, track who has read them
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────
+// Push Subscriptions
+// ─────────────────────────────────────────
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+// ─────────────────────────────────────────
+// Broadcasts
+// ─────────────────────────────────────────
+model Broadcast {
+  id           String    @id @default(uuid())
+  message      String
+  audience     String    // USERS, ADMINS, ALL, etc.
+  status       BroadcastStatus @default(PENDING)
+  totalUsers   Int       @default(0)
+  sentCount    Int       @default(0)
+  failedCount  Int       @default(0)
+  mediaUrl     String?
+  mediaType    String?
+  error        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("broadcasts")
+}
+
+enum BroadcastStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ─────────────────────────────────────────
+// Telegram Import Jobs (Persistent Worker Logs)
+// ─────────────────────────────────────────
+model TelegramImportJob {
+  id           String                  @id @default(uuid())
+  adminId      String
+  sourceChat   String
+  targetBot    String
+  status       TelegramImportJobStatus @default(IDLE)
+  progress     Int                     @default(0)
+  total        Int                     @default(0)
+  limitCount   Int?
+  skipExisting Boolean                 @default(true)
+  message      String?
+  error        String?
+  logs         Json?                   // To store an array of event log strings
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  @@map("telegram_import_jobs")
+}
+
+enum TelegramImportJobStatus {
+  IDLE
+  RUNNING
+  STOPPED
+  COMPLETED
+  FAILED
+}
+
