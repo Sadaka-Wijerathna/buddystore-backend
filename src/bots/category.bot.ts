@@ -1,6 +1,5 @@
 import { Bot, Context } from 'grammy';
 import https from 'https';
-import { Category } from '@prisma/client';
 import prisma from '../lib/prisma';
 import config from '../config';
 import { uploadThumbnail } from '../lib/cloudinary';
@@ -42,7 +41,7 @@ async function acquireRateToken(): Promise<void> {
 
 interface CategoryBotConfig {
   token: string;
-  category: Category;
+  category: string; // Free-form slug, e.g. "MIXED", "TEEN"
   name: string;
 }
 
@@ -54,7 +53,7 @@ interface PendingVideo {
 
 export class CategoryBot {
   public bot: Bot | null = null;
-  public category: Category;
+  public category: string;
   public name: string;
   public hasToken: boolean;
   private token: string;
@@ -509,31 +508,51 @@ export class CategoryBot {
 }
 
 // ─── Bot Registry ──────────────────────────────────────────────────────────────
+// Runtime map of category slug → CategoryBot instance.
+// Populated from the database (`bots` table).
+export const categoryBots: Record<string, CategoryBot> = {};
 
-export const categoryBots: Record<Category, CategoryBot> = {
-  MIXED:       new CategoryBot({ token: config.bots.mixed,      category: 'MIXED',       name: 'Buddymixed1Bot'    }),
-  MOM_SON:     new CategoryBot({ token: config.bots.momSon,     category: 'MOM_SON',     name: 'BuddyMs1Bot'       }),
-  SRI_LANKAN:  new CategoryBot({ token: config.bots.sriLankan,  category: 'SRI_LANKAN',  name: 'BuddySLBot'        }),
-  CCTV:        new CategoryBot({ token: config.bots.cctv,       category: 'CCTV',        name: 'Buddycctv1Bot'     }),
-  PUBLIC:      new CategoryBot({ token: config.bots.public,     category: 'PUBLIC',      name: 'BuddyPublicBot'    }),
-  RAPE:        new CategoryBot({ token: config.bots.rape,       category: 'RAPE',        name: 'BuddyRkpeBot'      }),
-};
+/**
+ * Initialize all category bots from the database at startup.
+ */
+export async function initCategoryBots(): Promise<void> {
+  try {
+    const bots = await prisma.bot.findMany({});
+    for (const b of bots) {
+      if (b.token) {
+        categoryBots[b.category] = new CategoryBot({
+          token: b.token,
+          category: b.category,
+          name: b.name,
+        });
+      }
+    }
+    console.log(`🤖 Initialized ${Object.keys(categoryBots).length} category bots from database.`);
+  } catch (err) {
+    console.error('❌ Failed to initialize category bots from database:', err);
+  }
+}
 
-// ─── Slug map: category → URL path segment ─────────────────────────────────
-// Must match the route paths registered in webhook.routes.ts
-const categorySlugMap: Record<Category, string> = {
-  MIXED:      'mixed',
-  MOM_SON:    'mom-son',
-  SRI_LANKAN: 'sri-lankan',
-  CCTV:       'cctv',
-  PUBLIC:     'public',
-  RAPE:       'rape',
-};
+/**
+ * Register or update a CategoryBot at runtime (e.g. when admin creates or edits a category).
+ */
+export function registerCategoryBot(category: string, token: string, name: string): CategoryBot {
+  if (categoryBots[category]) {
+    try { categoryBots[category].bot?.stop(); } catch (_) {}
+  }
+  categoryBots[category] = new CategoryBot({ token, category, name });
+  return categoryBots[category];
+}
 
 export const registerAllCategoryBotWebhooks = async (baseUrl: string, secret?: string): Promise<void> => {
-  for (const [category, bot] of Object.entries(categoryBots)) {
+  if (Object.keys(categoryBots).length === 0) {
+    await initCategoryBots();
+  }
+  for (const [, bot] of Object.entries(categoryBots)) {
     if (bot.hasToken) {
-      await bot.registerWebhook(baseUrl, categorySlugMap[category as Category], secret);
+      // Use sanitised bot name as webhook slug (no @ prefix, lowercase)
+      const slug = bot.name.replace(/^@/, '').toLowerCase();
+      await bot.registerWebhook(baseUrl, slug, secret);
     }
   }
 };

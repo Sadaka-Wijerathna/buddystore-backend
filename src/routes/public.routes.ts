@@ -8,6 +8,7 @@ const router = Router();
 
 // Special Bot Collections (Trending Videos) — public list
 router.get('/settings', publicController.getPublicSettings);
+router.get('/categories', publicController.getPublicCategories);
 router.get('/special-collections', publicController.getPublicSpecialCollections);
 router.get('/special-collections/:slug', publicController.getPublicSpecialCollectionBySlug);
 

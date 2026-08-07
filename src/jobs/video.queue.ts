@@ -1,4 +1,3 @@
-import { Category } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { categoryBots } from '../bots/category.bot';
 import { getIO } from '../lib/socket';
@@ -19,7 +18,7 @@ export interface VideoDeliveryJobData {
   orderId: string;
   userId: string;
   userTelegramId: string;
-  category: Category;
+  category: string; // Free-form category slug
   videoCount: number;
 }
 
@@ -123,25 +122,7 @@ async function processJob(jobId: string) {
     console.error(`[Job] Failed to send delivery summary for order ${orderId}:`, err);
   }
 
-  // Message 2: Star rating (editable, separate)
-  try {
-    const keyboard = new InlineKeyboard()
-      .text('⭐️ 1', `rate_order_${orderId}_1`)
-      .text('⭐️⭐️ 2', `rate_order_${orderId}_2`)
-      .text('⭐️⭐️⭐️ 3', `rate_order_${orderId}_3`)
-      .row()
-      .text('⭐️⭐️⭐️⭐️ 4', `rate_order_${orderId}_4`)
-      .row()
-      .text('🌟 5 Stars — Perfect! 🌟', `rate_order_${orderId}_5`);
 
-    await mainBot.api.sendMessage(
-      userTelegramId.toString(),
-      `⭐️ *How was your experience?*\nTap a rating below — it takes 2 seconds and means the world to us! 🙏`,
-      { parse_mode: 'Markdown', reply_markup: keyboard }
-    );
-  } catch (err) {
-    console.error(`[Job] Failed to send review prompt for order ${orderId}:`, err);
-  }
 
   io?.to(`order:${orderId}`).emit('order:status', {
     orderId, status: 'COMPLETED', delivered: sentCount, total: videoCount, percentComplete: 100,

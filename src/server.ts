@@ -7,6 +7,7 @@ import { createVideoDeliveryWorker } from './jobs/video.queue';
 import { registerMainBotWebhook, deregisterMainBotWebhook } from './bots/main.bot';
 import { registerAllCategoryBotWebhooks, deregisterAllCategoryBotWebhooks } from './bots/category.bot';
 import { registerSpecialBotWebhook, deregisterSpecialBotWebhook } from './bots/special.bot';
+import { createWebhookRouter } from './routes/webhook.routes';
 import prisma from './lib/prisma';
 import { initCronJobs } from './jobs/cron';
 import { startRecoverySweeper, stopRecoverySweeper } from './jobs/recoverySweeper.job';
@@ -48,6 +49,10 @@ async function bootstrap() {
       await registerMainBotWebhook(base, secret);
       await registerAllCategoryBotWebhooks(base, secret);
       await registerSpecialBotWebhook(base, secret);
+
+      // Mount webhook router AFTER bots are initialized so the categoryBots
+      // registry is fully populated before routes are registered.
+      app.use('/webhooks', createWebhookRouter());
 
       console.log('✅ All bot webhooks registered');
     }

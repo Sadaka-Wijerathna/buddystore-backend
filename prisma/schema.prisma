@@ -125,7 +125,9 @@ model PasswordResetOtp {
 model Bot {
   id             String   @id @default(uuid())
   name           String   @unique
-  category       Category @unique
+  token          String?  // Telegram bot token (stored securely for dynamic bot management)
+  category       String   @unique // Free-form slug, e.g. MIXED, MOM_SON, TEEN — set by admin
+  label          String   @default("") // Human-readable display name, e.g. "Mixed", "Teen"
   collectionMode Boolean  @default(false)
   totalVideos    Int      @default(0)
   minVideoCount  Int      @default(10)
@@ -141,15 +143,6 @@ model Bot {
   @@map("bots")
 }
 
-enum Category {
-  MIXED
-  MOM_SON
-  SRI_LANKAN
-  CCTV
-  PUBLIC
-  RAPE
-}
-
 // ─────────────────────────────────────────
 // One-time tokens for verifying per-bot start (used in checkout)
 // ─────────────────────────────────────────
@@ -157,7 +150,7 @@ model BotVerifyToken {
   id        String   @id @default(uuid())
   token     String   @unique @default(cuid())
   userId    String
-  category  Category
+  category  String   // Free-form category slug
   verified  Boolean  @default(false)
   expiresAt DateTime
   createdAt DateTime @default(now())
@@ -189,7 +182,7 @@ model Videos {
   fileId           String   @unique // Telegram file_id
   telegramUniqueId String?  @unique // Telegram file_unique_id (prevents duplicates)
   thumbnailUrl     String? // Cloudinary thumbnail URL (extracted on upload)
-  category         Category
+  category         String   // Free-form category slug
   botId            String
   collectedAt      DateTime @default(now())
 
@@ -207,7 +200,7 @@ model Order {
   id          String      @id @default(uuid())
   userId      String
   botId       String
-  category    Category
+  category    String   // Free-form category slug
   videoCount  Int
   priceAmount Float       @default(0)
   receiptUrl  String?
@@ -276,7 +269,7 @@ model VideoDeliveryJob {
   orderId        String
   userId         String
   userTelegramId BigInt
-  category       Category
+  category       String   // Free-form category slug
   videoCount     Int
 
   status   DeliveryJobStatus @default(PENDING)

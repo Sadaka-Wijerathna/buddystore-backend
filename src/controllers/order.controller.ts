@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { Category, PaymentMethod, Prisma } from '@prisma/client';
+import { PaymentMethod, Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { uploadReceipt } from '../lib/cloudinary';
@@ -17,38 +17,40 @@ function notifyAdmins(event: string, payload: Record<string, unknown>) {
   }
 }
 
-const VALID_CATEGORIES: Category[] = ['MIXED', 'MOM_SON', 'SRI_LANKAN', 'CCTV', 'PUBLIC', 'RAPE'];
-
 // ─── Get Category Limits ──────────────────────────────────────────────────────
 export const getCategoryLimits = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const { category } = req.query;
+  const { category } = req.query;
 
-    if (!category || !VALID_CATEGORIES.includes(category as Category)) {
-      res.status(400).json({ success: false, message: 'Valid category is required' });
+    if (!category) {
+      res.status(400).json({ success: false, message: 'Category is required' });
       return;
     }
 
-    const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
+    const bot = await prisma.bot.findUnique({ where: { category: String(category) } });
     if (!bot) {
       res.status(404).json({ success: false, message: 'No bot configured for this category' });
       return;
     }
 
-    const availableVideos = await prisma.videos.count({
-      where: {
-        category: category as Category,
-        videoDeliveries: { none: { userId } },
-      },
-    });
+    // Run both counts in parallel.
+    // IMPORTANT: Avoid the slow `videoDeliveries: { none: { userId } }` pattern which
+    // generates a correlated NOT-EXISTS subquery that scans the entire table.
+    // Instead, compute: available = totalVideos - alreadyReceived (two fast indexed counts).
+    const [totalVideos, alreadyReceived] = await Promise.all([
+      prisma.videos.count({
+        where: { category: String(category) },
+      }),
+      prisma.videoDelivery.count({
+        where: {
+          userId,
+          video: { category: String(category) },
+        },
+      }),
+    ]);
 
-    const alreadyReceived = await prisma.videoDelivery.count({
-      where: {
-        userId,
-        video: { category: category as Category },
-      },
-    });
+    const availableVideos = Math.max(0, totalVideos - alreadyReceived);
 
     res.json({
       success: true,
@@ -81,7 +83,7 @@ export const initiateOrder = async (req: AuthRequest, res: Response): Promise<vo
     const count = parseInt(videoCount, 10);
     const price = parseFloat(priceAmount);
 
-    const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
+    const bot = await prisma.bot.findUnique({ where: { category: String(category) } });
     if (!bot) {
       res.status(404).json({ success: false, message: 'Bot not found' });
       return;
@@ -91,7 +93,7 @@ export const initiateOrder = async (req: AuthRequest, res: Response): Promise<vo
       data: {
         userId,
         botId: bot.id,
-        category: category as Category,
+        category: String(category),
         videoCount: count,
         priceAmount: price,
         receiptUrl: 'PENDING_UPLOAD',
@@ -121,8 +123,9 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       return;
     }
 
-    if (!VALID_CATEGORIES.includes(category as Category)) {
-      res.status(400).json({ success: false, message: 'Invalid category' });
+    const categoryBot = await prisma.bot.findUnique({ where: { category: String(category) } });
+    if (!orderId && !categoryBot) {
+      res.status(404).json({ success: false, message: 'No bot configured for this category' });
       return;
     }
 
@@ -138,15 +141,11 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       return;
     }
 
-    const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
-    if (!bot) {
-      res.status(404).json({ success: false, message: 'No bot configured for this category' });
-      return;
-    }
+    const bot = categoryBot;
 
     const availableVideos = await prisma.videos.count({
       where: {
-        category: category as Category,
+        category: String(category),
         videoDeliveries: { none: { userId } },
       },
     });
@@ -206,7 +205,7 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
           receiptUrl,
           status: initialStatus,
           confirmedAt: initialStatus === 'CONFIRMED' ? new Date() : null,
-          category: category as Category,
+          category: String(category),
           videoCount: count,
           priceAmount: price,
         },
@@ -215,8 +214,8 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       transactionJobs.push(prisma.order.create({
         data: {
           userId,
-          botId: bot.id,
-          category: category as Category,
+          botId: bot!.id,
+          category: String(category),
           videoCount: count,
           priceAmount: price,
           receiptUrl,
@@ -308,12 +307,12 @@ export const createBotVerifyTokens = async (req: AuthRequest, res: Response): Pr
       categories.map(async (cat) => {
         // Reuse any already-verified token for this category
         const existing = await prisma.botVerifyToken.findFirst({
-          where: { userId, category: cat as import('@prisma/client').Category, verified: true },
+          where: { userId, category: cat, verified: true },
         });
 
         if (existing) {
           const bot = await prisma.bot.findUnique({
-            where: { category: cat as import('@prisma/client').Category }, select: { name: true },
+            where: { category: cat }, select: { name: true },
           });
           return {
             category: cat,
@@ -327,10 +326,10 @@ export const createBotVerifyTokens = async (req: AuthRequest, res: Response): Pr
         // Create a new token
         const [token, bot] = await Promise.all([
           prisma.botVerifyToken.create({
-            data: { userId, category: cat as import('@prisma/client').Category, expiresAt },
+            data: { userId, category: cat, expiresAt },
           }),
           prisma.bot.findUnique({
-            where: { category: cat as import('@prisma/client').Category }, select: { name: true },
+            where: { category: cat }, select: { name: true },
           }),
         ]);
         return {
@@ -408,13 +407,13 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
 
     let totalPriceRequired = 0;
     const errors: { category: string; message: string }[] = [];
-    const validItems: { category: Category; count: number; price: number; botId: string }[] = [];
+    const validItems: { category: string; count: number; price: number; botId: string }[] = [];
 
     for (const item of items) {
       const { category, videoCount, priceAmount } = item;
 
-      if (!VALID_CATEGORIES.includes(category as Category)) {
-        errors.push({ category, message: 'Invalid category' });
+      if (!category) {
+        errors.push({ category: String(category), message: 'Category is required' });
         continue;
       }
 
@@ -430,14 +429,14 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
         continue;
       }
 
-      const bot = await prisma.bot.findUnique({ where: { category: category as Category } });
+      const bot = await prisma.bot.findUnique({ where: { category: String(category) } });
       if (!bot) {
         errors.push({ category, message: 'No bot configured for this category' });
         continue;
       }
 
       const availableVideos = await prisma.videos.count({
-        where: { category: category as Category, videoDeliveries: { none: { userId } } },
+        where: { category: String(category), videoDeliveries: { none: { userId } } },
       });
 
       if (availableVideos < count) {
@@ -445,7 +444,7 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
         continue;
       }
       totalPriceRequired += price;
-      validItems.push({ category: category as Category, count, price, botId: bot.id });
+      validItems.push({ category: String(category), count, price, botId: bot.id });
     }
 
     if (validItems.length === 0) {

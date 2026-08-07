@@ -17,7 +17,6 @@ import orderRoutes from './routes/order.routes';
 import adminRoutes from './routes/admin.routes';
 import publicRoutes from './routes/public.routes';
 import pdfAdminRoutes from './routes/pdf.routes';
-import webhookRoutes from './routes/webhook.routes';
 
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
@@ -61,13 +60,13 @@ app.get('/health', (_req, res) => {
 });
 
 // ─── Telegram Webhook Routes ──────────────────────────────────────────────────
+// Mounted dynamically from server.ts AFTER initCategoryBots() populates the
+// registry. See server.ts → mountWebhookRouter().
 // MUST be mounted BEFORE sanitizeInput so the Telegram JSON payload is not mutated.
-// grammY's webhookCallback reads req.body directly and handles validation internally.
 app.use('/webhooks', (req, res, next) => {
   console.log(`[Webhook] 📥 Incoming request: ${req.method} ${req.url}`);
   next();
 });
-app.use('/webhooks', webhookRoutes);
 
 // ─── API Middleware (applied only after webhook routes) ───────────────────────
 app.use(sanitizeInput);

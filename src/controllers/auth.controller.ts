@@ -82,7 +82,7 @@ export const checkLoginUsername = async (req: Request, res: Response): Promise<v
 
     const user = await prisma.user.findFirst({
       where: { telegramUsername: { equals: username, mode: 'insensitive' } },
-      select: { id: true, firstName: true },
+      select: { id: true, firstName: true, telegramId: true },
     });
 
     if (!user) {
@@ -93,7 +93,10 @@ export const checkLoginUsername = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    res.json({ success: true, data: { firstName: user.firstName } });
+    // Fetch profile photo non-blocking (3 s timeout inside)
+    const photoUrl = await fetchTelegramPhotoUrl(user.telegramId);
+
+    res.json({ success: true, data: { firstName: user.firstName, photoUrl } });
   } catch (error) {
     console.error('[checkLoginUsername]', error);
     res.status(500).json({ success: false, message: 'Server error' });

@@ -4,10 +4,9 @@
  */
 import 'dotenv/config';
 import prisma from '../lib/prisma';
-import { Category } from '@prisma/client';
 
 const TARGET_USERNAME = 'buddyseller';
-const CATEGORIES: Category[] = ['MIXED', 'MOM_SON', 'SRI_LANKAN', 'CCTV', 'PUBLIC', 'RAPE'];
+const CATEGORIES: string[] = ['MIXED', 'MOM_SON', 'SRI_LANKAN', 'CCTV', 'PUBLIC', 'RAPE'];
 
 async function main() {
   console.log(`🌱 Seeding verified tokens for @${TARGET_USERNAME}...`);
