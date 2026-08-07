@@ -29,16 +29,6 @@ export const getPublicSpecialCollections = async (_req: Request, res: Response):
   }
 };
 
-// ─── Category label map ────────────────────────────────────────────────────────
-const CATEGORY_LABELS: Record<string, string> = {
-  MIXED:      'Mixed',
-  MOM_SON:    'Mom & Son',
-  SRI_LANKAN: 'Sri Lankan',
-  CCTV:       'CCTV & Hidden Cam',
-  PUBLIC:     'Public',
-  RAPE:       'Rape',
-};
-
 // GET /api/v1/public/video-gallery  (requires auth)
 // Returns category cards with the first 50 thumbnails each (for the preview mosaic).
 export const getVideoGallery = async (req: Request, res: Response): Promise<void> => {
@@ -49,12 +39,20 @@ export const getVideoGallery = async (req: Request, res: Response): Promise<void
       _count: { fileId: true },
     });
 
+    // Build a label map from the bots table so custom categories get the right display name
+    const allBots = await prisma.bot.findMany({ select: { category: true, label: true, bannerUrl: true } });
+    const labelMap: Record<string, string> = {};
+    const bannerMap: Record<string, string | null> = {};
+    allBots.forEach(b => {
+      labelMap[b.category] = b.label || b.category;
+      bannerMap[b.category] = b.bannerUrl;
+    });
+
     const data = await Promise.all(
       categoriesWithThumbnails.map(async (group) => {
-        const [totalVideos, totalWithThumbnail, bot] = await Promise.all([
+        const [totalVideos, totalWithThumbnail] = await Promise.all([
           prisma.videos.count({ where: { category: group.category } }),
           prisma.videos.count({ where: { category: group.category, thumbnailUrl: { not: null } } }),
-          prisma.bot.findUnique({ where: { category: group.category }, select: { bannerUrl: true } }),
         ]);
 
         const thumbnailRows = await prisma.videos.findMany({
@@ -69,10 +67,10 @@ export const getVideoGallery = async (req: Request, res: Response): Promise<void
 
         return {
           category: group.category,
-          label: CATEGORY_LABELS[group.category] ?? group.category,
+          label: labelMap[group.category] ?? group.category,
           totalVideos,
           totalWithThumbnail,
-          bannerUrl: bot?.bannerUrl ?? null,
+          bannerUrl: bannerMap[group.category] ?? null,
           isLocked: false,
           thumbnails: thumbnailRows.map(r => ({
             url: r.thumbnailUrl as string,
@@ -87,6 +85,42 @@ export const getVideoGallery = async (req: Request, res: Response): Promise<void
     res.json({ success: true, data: filtered });
   } catch (error) {
     console.error('[getVideoGallery]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/public/categories
+// Returns all categories that have an active bot configured.
+// Used by the packages page to build a dynamic category list.
+export const getPublicCategories = async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const bots = await prisma.bot.findMany({
+      select: {
+        category: true,
+        label: true,
+        name: true,
+        minVideoCount: true,
+        pricePerVideo: true,
+        totalVideos: true,
+        collectionMode: true,
+      },
+      orderBy: { category: 'asc' },
+    });
+
+    res.json({
+      success: true,
+      data: bots.map(b => ({
+        category: b.category,
+        label: b.label || b.category,
+        botHandle: `@${b.name}`,
+        minVideoCount: b.minVideoCount,
+        pricePerVideo: b.pricePerVideo,
+        totalVideos: b.totalVideos,
+        collectionMode: b.collectionMode,
+      })),
+    });
+  } catch (error) {
+    console.error('[getPublicCategories]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };

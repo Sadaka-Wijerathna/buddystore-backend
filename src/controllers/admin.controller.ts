@@ -25,6 +25,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
         id: bot.id,
         name: bot.name,
         category: bot.category,
+        label: bot.label || bot.category, // fall back to slug if label not set
         collectionMode: bot.collectionMode,
         totalVideos: bot._count.videos,
         minVideoCount: bot.minVideoCount,
@@ -33,6 +34,91 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
     });
   } catch (error) {
     console.error('[getBots]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Create a new bot for a category ──────────────────────────────────────
+export const createBot = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { name, token, category, label, minVideoCount, pricePerVideo } = req.body;
+
+    if (!name || !token || !category || typeof category !== 'string' || category.trim() === '') {
+      res.status(400).json({ success: false, message: 'name, bot token, and a valid category slug are required' });
+      return;
+    }
+
+    // Normalise: uppercase slug, trim whitespace
+    const categorySlug = category.trim().toUpperCase().replace(/\s+/g, '_');
+    const displayLabel = (label || '').trim() || categorySlug;
+
+    // Check if bot already exists for this category
+    const existing = await prisma.bot.findUnique({ where: { category: categorySlug } });
+    if (existing) {
+      res.status(409).json({ success: false, message: `A bot for category ${categorySlug} already exists` });
+      return;
+    }
+
+    const bot = await prisma.bot.create({
+      data: {
+        name: name.trim(),
+        token: token.trim(),
+        category: categorySlug,
+        label: displayLabel,
+        minVideoCount: minVideoCount ? parseInt(minVideoCount, 10) : 10,
+        pricePerVideo: pricePerVideo ? parseFloat(pricePerVideo) : 5,
+      },
+    });
+
+    // Register bot instance dynamically
+    const { registerCategoryBot } = await import('../bots/category.bot');
+    registerCategoryBot(bot.category, bot.token!, bot.name);
+
+    res.status(201).json({
+      success: true,
+      message: `Bot for ${categorySlug} created successfully`,
+      data: {
+        id: bot.id,
+        name: bot.name,
+        category: bot.category,
+        label: bot.label,
+        minVideoCount: bot.minVideoCount,
+        pricePerVideo: bot.pricePerVideo,
+        collectionMode: bot.collectionMode,
+        totalVideos: 0,
+      },
+    });
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      res.status(409).json({ success: false, message: 'A bot with that name or category already exists' });
+      return;
+    }
+    console.error('[createBot]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ─── Delete a bot (and its videos) ──────────────────────────────────────────
+export const deleteBot = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+
+    const bot = await prisma.bot.findUnique({ where: { id }, include: { _count: { select: { videos: true } } } });
+    if (!bot) {
+      res.status(404).json({ success: false, message: 'Bot not found' });
+      return;
+    }
+
+    // Delete all videos for this bot first (to avoid FK constraint errors)
+    await prisma.videos.deleteMany({ where: { botId: id } });
+    await prisma.bot.delete({ where: { id } });
+
+    res.json({
+      success: true,
+      message: `Bot for ${bot.category} deleted (${bot._count.videos} videos removed)`,
+    });
+  } catch (error) {
+    console.error('[deleteBot]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
@@ -59,14 +145,30 @@ export const toggleCollectionMode = async (req: AuthRequest, res: Response): Pro
   }
 };
 
-// ─── Update bot settings (min video count and price per video) ───────────────
-// PATCH /admin/bots/:id/settings  { minVideoCount?, pricePerVideo? }
+// ─── Update bot settings (display name, bot handle, min video count, price) ───
+// PATCH /admin/bots/:id/settings  { label?, name?, minVideoCount?, pricePerVideo? }
 export const updateBotSettings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const { minVideoCount, pricePerVideo } = req.body;
+    const { label, name, minVideoCount, pricePerVideo } = req.body;
 
-    const data: { minVideoCount?: number; pricePerVideo?: number } = {};
+    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number } = {};
+
+    if (label !== undefined) {
+      if (typeof label !== 'string' || !label.trim()) {
+        res.status(400).json({ success: false, message: 'Display name cannot be empty' });
+        return;
+      }
+      data.label = label.trim();
+    }
+
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        res.status(400).json({ success: false, message: 'Bot handle cannot be empty' });
+        return;
+      }
+      data.name = name.trim();
+    }
 
     if (minVideoCount !== undefined) {
       const count = parseInt(minVideoCount, 10);
@@ -91,14 +193,21 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
       return;
     }
 
-    const bot = await prisma.bot.update({ where: { id }, data });
+    const bot = await prisma.bot.update({
+      where: { id },
+      data,
+    });
 
     res.json({
       success: true,
-      message: `Settings updated for ${bot.name}`,
-      data: { id: bot.id, minVideoCount: bot.minVideoCount, pricePerVideo: bot.pricePerVideo },
+      message: `Settings updated for ${bot.label || bot.name}`,
+      data: bot,
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === 'P2002') {
+      res.status(409).json({ success: false, message: 'A bot with that handle already exists' });
+      return;
+    }
     console.error('[updateBotSettings]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
@@ -329,124 +438,7 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
   }
 };
 
-// ─── Get all reviews (paginated) ──────────────────────────────────────────
-export const getReviews = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const page  = Math.max(1, parseInt(String(req.query.page  ?? '1'), 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50));
-    const skip  = (page - 1) * limit;
 
-    const statusFilter = req.query.status ? String(req.query.status) : undefined;
-    const where: any = {};
-    if (statusFilter) where.status = statusFilter;
-
-    const [reviews, total] = await Promise.all([
-      prisma.review.findMany({
-        where,
-        include: {
-          user: { select: { firstName: true, telegramUsername: true } },
-          order: { select: { category: true } }
-        },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      prisma.review.count({ where }),
-    ]);
-
-    res.json({ success: true, data: reviews, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
-  } catch (error) {
-    console.error('[getReviews]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
-
-// ─── Update Review Status ────────────────────────────────────────────────
-export const updateReviewStatus = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const id = req.params.id as string;
-    const { status } = req.body as { status: 'PENDING' | 'APPROVED' | 'REJECTED' };
-
-    if (!['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
-      res.status(400).json({ success: false, message: 'Invalid status' });
-      return;
-    }
-
-    const review = await prisma.review.findUnique({
-      where: { id },
-      include: { user: true, order: true }
-    });
-
-    if (!review) {
-      res.status(404).json({ success: false, message: 'Review not found' });
-      return;
-    }
-
-    const updated = await prisma.review.update({
-      where: { id },
-      data: { status }
-    });
-
-    // Broadcast review if approved (for all ratings)
-    if (status === 'APPROVED' && config.telegram.publicChannelId) {
-      try {
-        let stars = '⭐️'.repeat(updated.rating);
-        let msg = `🎉 *New ${updated.rating}-Star Review!*\n\n${stars}\n`;
-        if (updated.text) {
-          msg += `_"${updated.text}"_\n\n`;
-        } else {
-          msg += `\n`;
-        }
-
-        if (review.order) {
-          const { category, priceAmount, id: orderId, createdAt, completedAt } = review.order;
-          
-          let timeDiffStr = "N/A";
-          if (completedAt && createdAt) {
-            const diffMs = new Date(completedAt).getTime() - new Date(createdAt).getTime();
-            const diffMins = Math.floor(diffMs / 60000);
-            if (diffMins < 60) {
-              timeDiffStr = `${diffMins} minutes`;
-            } else {
-              const hrs = Math.floor(diffMins / 60);
-              const mins = diffMins % 60;
-              timeDiffStr = `${hrs}h ${mins}m`;
-            }
-          }
-
-          const priceStr = priceAmount === 0 ? "Free" : `LKR ${priceAmount}`;
-          const categoryStr = category.replace(/_/g, " ");
-
-          msg += `📦 *Package:* ${categoryStr} | ${priceStr}\n`;
-          msg += `🏷 *Order ID:* \`${orderId}\`\n`;
-          msg += `⚡️ *Completed in:* ${timeDiffStr}`;
-        }
-
-        await mainBot.api.sendMessage(config.telegram.publicChannelId, msg, { parse_mode: 'Markdown' });
-        console.log(`[Reviews] Broadcasted 5-star review ${id} to ${config.telegram.publicChannelId}`);
-      } catch (err) {
-        console.error('[Reviews] Failed to broadcast review:', err);
-      }
-    }
-
-    res.json({ success: true, data: updated, message: `Review marked as ${status}` });
-  } catch (error) {
-    console.error('[updateReviewStatus]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
-
-// ─── Delete Review ───────────────────────────────────────────────────────
-export const deleteReview = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const id = req.params.id as string;
-    await prisma.review.delete({ where: { id } });
-    res.json({ success: true, message: 'Review deleted successfully' });
-  } catch (error) {
-    console.error('[deleteReview]', error);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
 
 // ─── Get all orders (paginated + filterable) ──────────────────────────────────────
 // Query params: ?page=1&limit=50&status=PENDING&category=MIXED

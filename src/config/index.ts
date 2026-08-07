@@ -15,12 +15,6 @@ const config = {
 
   bots: {
     main: process.env.MAIN_BOT_TOKEN || '',
-    mixed: process.env.BOT_MIXED_TOKEN || '',
-    momSon: process.env.BOT_MOM_SON_TOKEN || '',
-    sriLankan: process.env.BOT_SRI_LANKAN_TOKEN || '',
-    cctv: process.env.BOT_CCTV_TOKEN || '',
-    public: process.env.BOT_PUBLIC_TOKEN || '',
-    rape: process.env.BOT_RAPE_TOKEN || '',
     special: process.env.BOT_SPECIAL_TOKEN || '',
   },
   telegram: {

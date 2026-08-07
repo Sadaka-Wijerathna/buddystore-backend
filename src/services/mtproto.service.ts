@@ -186,6 +186,16 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
     }
   }
 
+  // Forcefully disconnect any stale in-memory client before creating a new one.
+  // Without this, a server restart leaves the old auth key open on Telegram's end
+  // and the new connection receives AUTH_KEY_DUPLICATED (error 406).
+  if (activeClients[adminId]) {
+    try {
+      await activeClients[adminId].disconnect();
+    } catch (_) {}
+    delete activeClients[adminId];
+  }
+
   const sessionSetting = await prisma.setting.findUnique({
     where: { key: `telegram_mtproto_session_${adminId}` },
   });
@@ -195,20 +205,40 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
   }
 
   const { apiId, apiHash } = await getApiCredentials();
-  
-  const client = new TelegramClient(new StringSession(sessionSetting.value), apiId, apiHash, {
-    connectionRetries: 5,
-    baseLogger: new Logger('warn' as any),
-  });
 
-  await client.connect();
-  
-  if (await client.checkAuthorization()) {
-    activeClients[adminId] = client;
-    return client;
-  }
+  const tryConnect = async (retries = 2): Promise<TelegramClient | null> => {
+    const client = new TelegramClient(new StringSession(sessionSetting.value), apiId, apiHash, {
+      connectionRetries: 5,
+      baseLogger: new Logger('warn' as any),
+    });
 
-  return null;
+    try {
+      await client.connect();
+
+      if (await client.checkAuthorization()) {
+        activeClients[adminId] = client;
+        return client;
+      }
+
+      await client.disconnect();
+      return null;
+    } catch (err: any) {
+      try { await client.disconnect(); } catch (_) {}
+
+      // Telegram keeps the old key alive briefly after a process restart.
+      // Wait 3 s and retry — the conflict clears itself quickly.
+      if (err?.errorMessage === 'AUTH_KEY_DUPLICATED' && retries > 0) {
+        console.warn(`[mtproto] AUTH_KEY_DUPLICATED for admin ${adminId}, retrying in 3 s... (${retries} left)`);
+        await new Promise(r => setTimeout(r, 3000));
+        return tryConnect(retries - 1);
+      }
+
+      console.warn(`[mtproto] Failed to connect MTProto client for admin ${adminId}:`, err?.errorMessage || err?.message || err);
+      return null;
+    }
+  };
+
+  return tryConnect();
 }
 
 /**

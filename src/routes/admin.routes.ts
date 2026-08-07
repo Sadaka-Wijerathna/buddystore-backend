@@ -11,11 +11,14 @@ router.use(authenticate, requireAdmin);
 
 // Bots
 router.get('/bots', adminController.getBots);
+router.post('/bots', requireSuperAdmin, adminController.createBot);
 router.patch('/bots/:id/collection-mode', adminController.toggleCollectionMode);
 router.patch('/bots/:id/settings', adminController.updateBotSettings);
 router.patch('/bots/:id/min-video-count', adminController.updateBotMinVideoCount);
 router.patch('/bots/:id/banner', upload.single('banner'), adminController.updateBotBanner);
 router.delete('/bots/:id/videos', adminController.clearBotVideos);
+router.delete('/bots/:id', requireSuperAdmin, adminController.deleteBot);
+
 
 // Special Bot Collections
 router.get('/special-collections', adminController.getSpecialCollections);
@@ -43,10 +46,6 @@ router.post('/users/:id/impersonate', requireSuperAdmin, adminController.imperso
 router.get('/broadcasts', adminController.getBroadcasts);
 router.get('/broadcasts/:id/status', adminController.getBroadcastStatus);
 
-// Reviews
-router.get('/reviews', adminController.getReviews);
-router.patch('/reviews/:id/status', adminController.updateReviewStatus);
-router.delete('/reviews/:id', adminController.deleteReview);
 
 // Orders
 router.get('/orders', adminController.getAllOrders);

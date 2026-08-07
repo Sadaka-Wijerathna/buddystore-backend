@@ -106,43 +106,6 @@ mainBot.on('message', async (ctx: Context) => {
     where: { telegramId: BigInt(from.id) },
   });
 
-  // Check if user opted in to leave a written review
-  if (ctx.message?.text && user) {
-    const pendingReview = await prisma.review.findFirst({
-      where: {
-        userId: user.id,
-        text: null,
-        status: 'PENDING',
-        order: { user: { telegramId: BigInt(from.id) } }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    if (pendingReview) {
-      const waitingForReview = reviewTextWaiting.get(from.id.toString());
-      if (waitingForReview) {
-        reviewTextWaiting.delete(from.id.toString());
-        
-        await prisma.review.update({
-          where: { id: waitingForReview },
-          data: { text: ctx.message.text }
-        });
-
-        // Delete the prompt message immediately
-        const promptMsgId = reviewPromptMessages.get(from.id.toString());
-        if (promptMsgId) {
-          reviewPromptMessages.delete(from.id.toString());
-          ctx.api.deleteMessage(from.id, promptMsgId).catch(() => {});
-        }
-
-        const sent = await ctx.reply(`✅ *Review saved! Thank you so much!* 🙏`, { parse_mode: 'Markdown' });
-        setTimeout(() => {
-          ctx.api.deleteMessage(from.id, sent.message_id).catch(() => {});
-        }, 2000);
-        return;
-      }
-    }
-  }
 
   if (user) {
     await ctx.reply(`👋 Hi ${user.firstName}! Visit https://buddystore.vercel.app/dashboard to manage your account.`);
@@ -248,76 +211,7 @@ mainBot.on('message:successful_payment', async (ctx) => {
   }
 });
 
-// ─── In-memory store: users waiting to type a review ─────────────────────────
-const reviewTextWaiting = new Map<string, string>(); // telegramId → reviewId
-const reviewPromptMessages = new Map<string, number>(); // telegramId → promptMessageId
 
-// ─── Review Ratings Callback ──────────────────────────────────────────
-mainBot.on('callback_query:data', async (ctx) => {
-  const data = ctx.callbackQuery.data;
-
-  // Answer immediately to stop the loading spinner
-  await ctx.answerCallbackQuery().catch(() => {});
-
-  if (data.startsWith('rate_order_')) {
-    const parts = data.split('_');
-    const orderId = parts[2];
-    const rating = parseInt(parts[3], 10);
-    const telegramId = ctx.from.id.toString();
-
-    try {
-      const order = await prisma.order.findUnique({
-        where: { id: orderId },
-        include: { user: true, review: true }
-      });
-
-      if (!order) {
-        await ctx.editMessageText('⚠️ Order not found.');
-        return;
-      }
-
-      if (order.user.telegramId.toString() !== telegramId) {
-        await ctx.editMessageText('⚠️ Unauthorized.');
-        return;
-      }
-
-      if (order.review) {
-        await ctx.editMessageText('✅ You have already reviewed this order! Thank you.');
-        return;
-      }
-
-      // Create review
-      const review = await prisma.review.create({
-        data: {
-          userId: order.userId,
-          orderId: orderId,
-          rating,
-          status: 'PENDING',
-        }
-      });
-
-      const starStr = '⭐️'.repeat(rating);
-
-      reviewTextWaiting.set(telegramId, review.id);
-      
-      // Store message ID so we can delete it later
-      if (ctx.callbackQuery.message) {
-        reviewPromptMessages.set(telegramId, ctx.callbackQuery.message.message_id);
-      }
-
-      // Edit the rating message to show the rating and ask for comment wait
-      await ctx.editMessageText(
-        `${starStr} *Thanks for the ${rating}-star rating!*\n\nWould you like to add a short written comment?\n\n✏️ *Go ahead — type your review now!*\nJust send your message in this chat and we'll save it automatically.`,
-        {
-          parse_mode: 'Markdown'
-        }
-      );
-    } catch (err) {
-      console.error('[MainBot] Error processing review callback:', err);
-      await ctx.reply('⚠️ Error submitting review. Please try again.');
-    }
-  }
-});
 
 // ─── Webhook Registration ─────────────────────────────────────────────────────
 // Called once on server startup. Tells Telegram to push all updates
