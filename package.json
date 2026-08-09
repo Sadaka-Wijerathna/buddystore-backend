@@ -13,7 +13,8 @@
     "prisma:studio": "prisma studio",
     "seed:bots": "ts-node src/scripts/seed-bots.ts",
     "seed:verify-tokens": "ts-node src/scripts/seed-verify-tokens.ts",
-    "set:admin": "ts-node src/scripts/set-admin.ts"
+    "set:admin": "ts-node src/scripts/set-admin.ts",
+    "debug:bots": "ts-node src/scripts/debug-bots.ts"
   },
   "keywords": [],
   "author": "",
