@@ -129,6 +129,8 @@ model Bot {
   category       String   @unique // Free-form slug, e.g. MIXED, MOM_SON, TEEN — set by admin
   label          String   @default("") // Human-readable display name, e.g. "Mixed", "Teen"
   collectionMode Boolean  @default(false)
+  collectVideos  Boolean  @default(true)   // grab video / video_note / doc-video messages
+  collectPhotos  Boolean  @default(false)  // grab photo messages
   totalVideos    Int      @default(0)
   minVideoCount  Int      @default(10)
   pricePerVideo  Float    @default(5)
@@ -184,6 +186,7 @@ model Videos {
   thumbnailUrl     String? // Cloudinary thumbnail URL (extracted on upload)
   category         String   // Free-form category slug
   botId            String
+  mediaType        String   @default("video") // "video" | "photo"
   collectedAt      DateTime @default(now())
 
   bot             Bot             @relation(fields: [botId], references: [id])

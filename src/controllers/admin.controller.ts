@@ -27,6 +27,8 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
         category: bot.category,
         label: bot.label || bot.category, // fall back to slug if label not set
         collectionMode: bot.collectionMode,
+        collectVideos: bot.collectVideos,
+        collectPhotos: bot.collectPhotos,
         totalVideos: bot._count.videos,
         minVideoCount: bot.minVideoCount,
         pricePerVideo: bot.pricePerVideo,
@@ -41,7 +43,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
 // ─── Create a new bot for a category ──────────────────────────────────────
 export const createBot = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { name, token, category, label, minVideoCount, pricePerVideo } = req.body;
+    const { name, token, category, label, minVideoCount, pricePerVideo, collectVideos, collectPhotos } = req.body;
 
     if (!name || !token || !category || typeof category !== 'string' || category.trim() === '') {
       res.status(400).json({ success: false, message: 'name, bot token, and a valid category slug are required' });
@@ -67,6 +69,8 @@ export const createBot = async (req: AuthRequest, res: Response): Promise<void> 
         label: displayLabel,
         minVideoCount: minVideoCount ? parseInt(minVideoCount, 10) : 10,
         pricePerVideo: pricePerVideo ? parseFloat(pricePerVideo) : 5,
+        collectVideos: collectVideos !== undefined ? Boolean(collectVideos) : true,
+        collectPhotos: collectPhotos !== undefined ? Boolean(collectPhotos) : false,
       },
     });
 
@@ -85,6 +89,8 @@ export const createBot = async (req: AuthRequest, res: Response): Promise<void> 
         minVideoCount: bot.minVideoCount,
         pricePerVideo: bot.pricePerVideo,
         collectionMode: bot.collectionMode,
+        collectVideos: bot.collectVideos,
+        collectPhotos: bot.collectPhotos,
         totalVideos: 0,
       },
     });
@@ -150,9 +156,9 @@ export const toggleCollectionMode = async (req: AuthRequest, res: Response): Pro
 export const updateBotSettings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const { label, name, minVideoCount, pricePerVideo } = req.body;
+    const { label, name, minVideoCount, pricePerVideo, collectVideos, collectPhotos } = req.body;
 
-    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number } = {};
+    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean } = {};
 
     if (label !== undefined) {
       if (typeof label !== 'string' || !label.trim()) {
@@ -186,6 +192,14 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
         return;
       }
       data.pricePerVideo = price;
+    }
+
+    if (collectVideos !== undefined) {
+      data.collectVideos = Boolean(collectVideos);
+    }
+
+    if (collectPhotos !== undefined) {
+      data.collectPhotos = Boolean(collectPhotos);
     }
 
     if (Object.keys(data).length === 0) {
