@@ -49,6 +49,7 @@ interface PendingVideo {
   fileId: string;
   telegramUniqueId: string;
   thumbnailFileId?: string;
+  mediaType: 'video' | 'photo';
 }
 
 export class CategoryBot {
@@ -144,6 +145,11 @@ export class CategoryBot {
       }
     });
 
+    // Handle photos sent to the bot (only when collectPhotos is enabled)
+    bot.on('message:photo', async (ctx: Context) => {
+      await this.handlePhotoMessage(ctx);
+    });
+
     bot.command('status', async (ctx: Context) => {
       const botRecord = await this.getBotRecord();
       if (!botRecord) {
@@ -153,7 +159,9 @@ export class CategoryBot {
       await ctx.reply(
         `📊 *${this.name} Status*\n\n` +
         `Collection Mode: ${botRecord.collectionMode ? '🟢 ON' : '🔴 OFF'}\n` +
-        `Total Videos: ${botRecord.totalVideos}`,
+        `Videos: ${botRecord.collectVideos ? '✅ collecting' : '⏸ paused'}\n` +
+        `Photos: ${botRecord.collectPhotos ? '✅ collecting' : '⏸ paused'}\n` +
+        `Total Media: ${botRecord.totalVideos}`,
         { parse_mode: 'Markdown' }
       );
     });
@@ -183,45 +191,58 @@ export class CategoryBot {
 
   private async handleVideoMessage(ctx: Context) {
     const botRecord = await this.getBotRecord();
-    if (!botRecord?.collectionMode) return; // Ignore if collection mode is off
+    if (!botRecord?.collectionMode || !botRecord.collectVideos) return; // Ignore if collection mode is off or videos disabled
 
     const video = ctx.message?.video;
     if (!video) return;
 
     const thumbnailFileId = video.thumbnail?.file_id;
-    this.queueVideoSave(video.file_id, video.file_unique_id, botRecord.id, thumbnailFileId);
+    this.queueMediaSave(video.file_id, video.file_unique_id, botRecord.id, 'video', thumbnailFileId);
     await ctx.react('👍').catch(() => {});
   }
 
   private async handleVideoNoteMessage(ctx: Context) {
     const botRecord = await this.getBotRecord();
-    if (!botRecord?.collectionMode) return;
+    if (!botRecord?.collectionMode || !botRecord.collectVideos) return;
 
     const videoNote = ctx.message?.video_note;
     if (!videoNote) return;
 
     // Video notes don't have thumbnails in the Telegram API
-    this.queueVideoSave(videoNote.file_id, videoNote.file_unique_id, botRecord.id, undefined);
+    this.queueMediaSave(videoNote.file_id, videoNote.file_unique_id, botRecord.id, 'video', undefined);
     await ctx.react('👍').catch(() => {});
   }
 
   private async handleDocumentVideoMessage(ctx: Context, fileId: string, uniqueId: string, thumbnailFileId?: string) {
     const botRecord = await this.getBotRecord();
-    if (!botRecord?.collectionMode) return;
+    if (!botRecord?.collectionMode || !botRecord.collectVideos) return;
 
-    this.queueVideoSave(fileId, uniqueId, botRecord.id, thumbnailFileId);
+    this.queueMediaSave(fileId, uniqueId, botRecord.id, 'video', thumbnailFileId);
     await ctx.react('👍').catch(() => {});
   }
 
-  private queueVideoSave(fileId: string, telegramUniqueId: string, botDbId: string, thumbnailFileId?: string) {
+  private async handlePhotoMessage(ctx: Context) {
+    const botRecord = await this.getBotRecord();
+    if (!botRecord?.collectionMode || !botRecord.collectPhotos) return;
+
+    // photos come as an array of sizes — pick the largest (last element)
+    const photos = ctx.message?.photo;
+    if (!photos || photos.length === 0) return;
+    const largest = photos[photos.length - 1];
+
+    this.queueMediaSave(largest.file_id, largest.file_unique_id, botRecord.id, 'photo', undefined);
+    await ctx.react('👍').catch(() => {});
+  }
+
+  private queueMediaSave(fileId: string, telegramUniqueId: string, botDbId: string, mediaType: 'video' | 'photo', thumbnailFileId?: string) {
     // Deduplicate in memory: if uniqueId already queued, skip
     if (!this.pendingVideoBatch.find(v => v.telegramUniqueId === telegramUniqueId)) {
-      this.pendingVideoBatch.push({ fileId, telegramUniqueId, thumbnailFileId });
+      this.pendingVideoBatch.push({ fileId, telegramUniqueId, thumbnailFileId, mediaType });
     }
     if (!this.batchTimer) {
       this.batchTimer = setTimeout(() => {
         this.processVideoBatch(botDbId);
-      }, 3000); // Process batch 3 seconds after the first video
+      }, 3000); // Process batch 3 seconds after the first item
     }
   }
 
@@ -257,7 +278,8 @@ export class CategoryBot {
             fileId: v.fileId,
             telegramUniqueId: v.telegramUniqueId,
             category: this.category,
-            botId: botDbId
+            botId: botDbId,
+            mediaType: v.mediaType,
           })),
           skipDuplicates: true
         });
@@ -267,7 +289,7 @@ export class CategoryBot {
           data: { totalVideos: { increment: newVideos.length } }
         });
 
-        console.log(`[${this.name}] Batch saved ${newVideos.length} non-duplicate videos.`);
+        console.log(`[${this.name}] Batch saved ${newVideos.length} non-duplicate media items.`);
 
         // ── Async thumbnail upload pass ────────────────────────────────────
         // Download & upload thumbnails to Cloudinary, then update each video's thumbnailUrl.
