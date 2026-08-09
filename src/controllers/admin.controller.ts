@@ -75,8 +75,30 @@ export const createBot = async (req: AuthRequest, res: Response): Promise<void> 
     });
 
     // Register bot instance dynamically
-    const { registerCategoryBot } = await import('../bots/category.bot');
-    registerCategoryBot(bot.category, bot.token!, bot.name);
+    const { registerCategoryBot, categoryBots } = await import('../bots/category.bot');
+    const newBotInstance = registerCategoryBot(bot.category, bot.token!, bot.name);
+
+    // ── Also register webhook + Express route so the bot receives updates immediately ──
+    // Without this, Telegram never knows where to POST updates for this newly-created bot.
+    const { webhookCallback } = await import('grammy');
+    const webhookBase   = config.webhookBaseUrl;
+    const webhookSecret = config.webhookSecret || undefined;
+    const slug = bot.name.replace(/^@/, '').toLowerCase();
+
+    if (webhookBase && newBotInstance.bot) {
+      // Tell Telegram where to deliver updates
+      await newBotInstance.registerWebhook(webhookBase, slug, webhookSecret);
+
+      // Mount the Express route so incoming webhook requests are handled
+      const { default: expressApp } = await import('../app');
+      expressApp.post(
+        `/webhooks/${slug}`,
+        webhookCallback(newBotInstance.bot, 'express', { secretToken: webhookSecret })
+      );
+      console.log(`[createBot] Mounted live webhook route: POST /webhooks/${slug}`);
+    } else if (!webhookBase) {
+      console.warn(`[createBot] WEBHOOK_BASE_URL not set — webhook for ${bot.name} not registered`);
+    }
 
     res.status(201).json({
       success: true,

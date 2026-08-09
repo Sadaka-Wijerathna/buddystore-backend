@@ -30,16 +30,21 @@ app.disable('x-powered-by');
 app.use(helmet());
 
 // Support comma-separated list of allowed origins in FRONTEND_URL
+// Example: FRONTEND_URL=https://buddystore.vercel.app,http://localhost:3000
 const allowedOrigins = config.frontendUrl
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
+console.log(`[CORS] Allowed origins: ${allowedOrigins.join(', ')}`);
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. mobile apps, curl, Render health checks)
+    // Allow requests with no origin (curl, mobile apps, Render health checks)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Log blocked origins to help diagnose CORS issues in production
+    console.warn(`[CORS] ❌ Blocked origin: ${origin} — add it to FRONTEND_URL env var`);
     callback(new Error(`CORS: origin '${origin}' not allowed`));
   },
   credentials: true,

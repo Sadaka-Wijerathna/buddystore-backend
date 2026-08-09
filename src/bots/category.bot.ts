@@ -190,33 +190,57 @@ export class CategoryBot {
   }
 
   private async handleVideoMessage(ctx: Context) {
+    const from = ctx.from?.id ?? 'unknown';
+    console.log(`[${this.name}] 📥 Video received from user ${from}`);
     const botRecord = await this.getBotRecord();
-    if (!botRecord?.collectionMode || !botRecord.collectVideos) return; // Ignore if collection mode is off or videos disabled
+    if (!botRecord) {
+      console.warn(`[${this.name}] ⚠️ No bot record found in DB — cannot save video`);
+      return;
+    }
+    if (!botRecord.collectionMode) {
+      console.log(`[${this.name}] 🔕 Collection mode is OFF — video ignored`);
+      return;
+    }
+    if (!botRecord.collectVideos) {
+      console.log(`[${this.name}] 🔕 collectVideos is false — video ignored`);
+      return;
+    }
 
     const video = ctx.message?.video;
     if (!video) return;
 
     const thumbnailFileId = video.thumbnail?.file_id;
+    console.log(`[${this.name}] ✅ Queuing video: ${video.file_unique_id}`);
     this.queueMediaSave(video.file_id, video.file_unique_id, botRecord.id, 'video', thumbnailFileId);
     await ctx.react('👍').catch(() => {});
   }
 
   private async handleVideoNoteMessage(ctx: Context) {
+    console.log(`[${this.name}] 📥 Video note received from user ${ctx.from?.id ?? 'unknown'}`);
     const botRecord = await this.getBotRecord();
-    if (!botRecord?.collectionMode || !botRecord.collectVideos) return;
+    if (!botRecord?.collectionMode || !botRecord.collectVideos) {
+      console.log(`[${this.name}] 🔕 Video note ignored (collectionMode=${botRecord?.collectionMode}, collectVideos=${botRecord?.collectVideos})`);
+      return;
+    }
 
     const videoNote = ctx.message?.video_note;
     if (!videoNote) return;
 
     // Video notes don't have thumbnails in the Telegram API
+    console.log(`[${this.name}] ✅ Queuing video note: ${videoNote.file_unique_id}`);
     this.queueMediaSave(videoNote.file_id, videoNote.file_unique_id, botRecord.id, 'video', undefined);
     await ctx.react('👍').catch(() => {});
   }
 
   private async handleDocumentVideoMessage(ctx: Context, fileId: string, uniqueId: string, thumbnailFileId?: string) {
+    console.log(`[${this.name}] 📥 Document-video received from user ${ctx.from?.id ?? 'unknown'}`);
     const botRecord = await this.getBotRecord();
-    if (!botRecord?.collectionMode || !botRecord.collectVideos) return;
+    if (!botRecord?.collectionMode || !botRecord.collectVideos) {
+      console.log(`[${this.name}] 🔕 Document-video ignored (collectionMode=${botRecord?.collectionMode}, collectVideos=${botRecord?.collectVideos})`);
+      return;
+    }
 
+    console.log(`[${this.name}] ✅ Queuing document-video: ${uniqueId}`);
     this.queueMediaSave(fileId, uniqueId, botRecord.id, 'video', thumbnailFileId);
     await ctx.react('👍').catch(() => {});
   }
@@ -366,7 +390,7 @@ export class CategoryBot {
     if (record) {
       this.botDbId = record.id;
       this.cachedBotRecord = record;
-      this.botRecordCacheTime = now + 10000; // 10 seconds cache
+      this.botRecordCacheTime = now + 2000; // 2 seconds cache — fast enough to react to collectionMode toggles
     }
     return record;
   }
