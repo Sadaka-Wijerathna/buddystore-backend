@@ -37,30 +37,58 @@ function getMainBot() {
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Format a past date as a human-readable "time ago" string.
+ */
+function getTimeAgoText(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const diffMins = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays > 0) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+  if (diffHours > 0) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  if (diffMins > 0) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+  return 'just now';
+}
+
 /**
  * Fetch the user's Telegram profile photo URL using the main bot.
  * Times out after 3 s — never delays login or token refresh.
  * Returns null if the user has no photo, bot is unavailable, or it times out.
  */
-async function fetchTelegramPhotoUrl(telegramId: bigint | string): Promise<string | null> {
-  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000));
+export async function syncTelegramProfile(telegramId: bigint | string): Promise<{ photoUrl: string | null; firstName: string; lastName: string | null; username: string | null } | null> {
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 10000));
 
-  const fetch = async (): Promise<string | null> => {
+  const fetch = async (): Promise<{ photoUrl: string | null; firstName: string; lastName: string | null; username: string | null } | null> => {
     try {
       const bot = getMainBot();
       if (!bot) return null;
 
-      const photos = await bot.api.getUserProfilePhotos(Number(telegramId), { limit: 1 });
-      if (!photos.total_count || !photos.photos[0]?.[0]) return null;
+      const chat = await bot.api.getChat(Number(telegramId));
+      if (chat.type !== 'private') return null;
 
-      // Use the smallest thumbnail (index 0) for a fast avatar load
-      const fileId = photos.photos[0][0].file_id;
-      const file = await bot.api.getFile(fileId);
-      if (!file.file_path) return null;
+      let photoUrl = null;
+      try {
+        const photos = await bot.api.getUserProfilePhotos(Number(telegramId), { limit: 1 });
+        if (photos.total_count && photos.photos[0]?.[0]) {
+          const fileId = photos.photos[0][0].file_id;
+          const file = await bot.api.getFile(fileId);
+          if (file.file_path) {
+            const botToken = config.bots.main;
+            photoUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+          }
+        }
+      } catch {
+        // ignore photo fetch error
+      }
 
-      const botToken = config.bots.main;
-      return `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
+      return {
+        photoUrl,
+        firstName: chat.first_name,
+        lastName: chat.last_name || null,
+        username: chat.username || null,
+      };
     } catch {
       return null;
     }
@@ -86,6 +114,21 @@ export const checkLoginUsername = async (req: Request, res: Response): Promise<v
     });
 
     if (!user) {
+      // Check if they are trying to use an old username
+      const oldUser = await prisma.user.findFirst({
+        where: { oldTelegramUsername: { equals: username, mode: 'insensitive' } },
+        select: { telegramUsername: true, usernameUpdatedAt: true },
+      });
+
+      if (oldUser && oldUser.usernameUpdatedAt) {
+        const timeText = getTimeAgoText(oldUser.usernameUpdatedAt);
+        res.status(404).json({
+          success: false,
+          message: `You changed your Telegram username ${timeText}. Please log in using your current username: @${oldUser.telegramUsername}`,
+        });
+        return;
+      }
+
       res.status(404).json({
         success: false,
         message: `No account found for @${username}. Please register first.`,
@@ -93,10 +136,10 @@ export const checkLoginUsername = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    // Fetch profile photo non-blocking (3 s timeout inside)
-    const photoUrl = await fetchTelegramPhotoUrl(user.telegramId);
+    // Fetch profile photo and info non-blocking (3 s timeout inside)
+    const profile = await syncTelegramProfile(user.telegramId);
 
-    res.json({ success: true, data: { firstName: user.firstName, photoUrl } });
+    res.json({ success: true, data: { firstName: user.firstName, photoUrl: profile?.photoUrl || null } });
   } catch (error) {
     console.error('[checkLoginUsername]', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -198,6 +241,12 @@ export const verifyBot = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    let photoUrl: string | null = null;
+    if (regToken.telegramId) {
+      const profile = await syncTelegramProfile(regToken.telegramId);
+      if (profile) photoUrl = profile.photoUrl;
+    }
+
     // Bot has been started — return user's Telegram info
     res.json({
       success: true,
@@ -208,6 +257,7 @@ export const verifyBot = async (req: Request, res: Response): Promise<void> => {
         telegramUsername: regToken.telegramUsername,
         firstName: regToken.firstName,
         lastName: regToken.lastName,
+        photoUrl,
       },
     });
   } catch (error) {
@@ -339,8 +389,24 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
 
-    // Fetch Telegram profile photo (non-blocking)
-    const photoUrl = await fetchTelegramPhotoUrl(user.telegramId);
+    // Fetch Telegram profile (non-blocking for response)
+    const profile = await syncTelegramProfile(user.telegramId);
+
+    if (profile) {
+      prisma.user.update({
+        where: { id: user.id },
+        data: { 
+          photoUrl: profile.photoUrl,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          telegramUsername: profile.username || user.telegramUsername,
+          ...(profile.username && profile.username !== user.telegramUsername && {
+            oldTelegramUsername: user.telegramUsername,
+            usernameUpdatedAt: new Date(),
+          })
+        },
+      }).catch(e => console.error('[setPassword] Profile update failed:', e));
+    }
 
     res.status(201).json({
       success: true,
@@ -350,12 +416,12 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
         user: {
           id: user.id,
           telegramId: user.telegramId.toString(),
-          telegramUsername: user.telegramUsername,
-          firstName: user.firstName,
-          lastName: user.lastName,
+          telegramUsername: profile?.username || user.telegramUsername,
+          firstName: profile?.firstName || user.firstName,
+          lastName: profile?.lastName || user.lastName,
           role: user.role,
           adminRole: user.adminRole,
-          photoUrl,
+          photoUrl: profile?.photoUrl || null,
         },
       },
     });
@@ -382,6 +448,21 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!user) {
+      // Check if they are trying to use an old username
+      const oldUser = await prisma.user.findFirst({
+        where: { oldTelegramUsername: { equals: username, mode: 'insensitive' } },
+        select: { telegramUsername: true, usernameUpdatedAt: true },
+      });
+
+      if (oldUser && oldUser.usernameUpdatedAt) {
+        const timeText = getTimeAgoText(oldUser.usernameUpdatedAt);
+        res.status(401).json({
+          success: false,
+          message: `You changed your Telegram username ${timeText}. Please log in using your current username: @${oldUser.telegramUsername}`,
+        });
+        return;
+      }
+
       res.status(401).json({ success: false, message: 'Invalid credentials' });
       return;
     }
@@ -416,24 +497,34 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // ─── Record IP / device / last-login (fire-and-forget) ─────────────────
+    // Fetch Telegram profile photo
+    const profile = await syncTelegramProfile(user.telegramId);
+
+    // ─── Record IP / device / last-login / profile (fire-and-forget) ───────
     prisma.user.update({
       where: { id: user.id },
       data: {
         lastIpAddress: clientIp,
         deviceType: getDeviceType(req),
         lastLoginAt: new Date(),
+        ...(profile && { 
+          photoUrl: profile.photoUrl,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          telegramUsername: profile.username || user.telegramUsername,
+          ...(profile.username && profile.username !== user.telegramUsername && {
+            oldTelegramUsername: user.telegramUsername,
+            usernameUpdatedAt: new Date(),
+          })
+        }),
       },
-    }).catch(e => console.error('[login] IP update failed:', e));
+    }).catch(e => console.error('[login] Profile update failed:', e));
 
     const token = jwt.sign(
-      { id: user.id, role: user.role, adminRole: user.adminRole, telegramUsername: user.telegramUsername, tokenVersion: user.tokenVersion },
+      { id: user.id, role: user.role, adminRole: user.adminRole, telegramUsername: profile?.username || user.telegramUsername, tokenVersion: user.tokenVersion },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
-
-    // Fetch Telegram profile photo (non-blocking)
-    const photoUrl = await fetchTelegramPhotoUrl(user.telegramId);
 
     res.json({
       success: true,
@@ -443,12 +534,12 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         user: {
           id: user.id,
           telegramId: user.telegramId.toString(),
-          telegramUsername: user.telegramUsername,
-          firstName: user.firstName,
-          lastName: user.lastName,
+          telegramUsername: profile?.username || user.telegramUsername,
+          firstName: profile?.firstName || user.firstName,
+          lastName: profile?.lastName || user.lastName,
           role: user.role,
           adminRole: user.adminRole,
-          photoUrl,
+          photoUrl: profile?.photoUrl || null,
         },
       },
     });
@@ -478,6 +569,7 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
       res.json({
         success: true,
         message: 'If this account exists, an OTP has been sent to your Telegram.',
+        data: { photoUrl: null }
       });
       return;
     }
@@ -538,6 +630,7 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
     res.json({
       success: true,
       message: 'OTP sent to your Telegram account.',
+      data: { photoUrl: user.photoUrl || null },
     });
   } catch (error) {
     console.error('[requestPasswordReset]', error);
@@ -672,8 +765,23 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
       },
     }).catch(e => console.error('[refreshToken] IP update failed:', e));
 
-    // Fetch Telegram profile photo (non-blocking)
-    const photoUrl = await fetchTelegramPhotoUrl(user.telegramId);
+    // Fetch Telegram profile (non-blocking)
+    const profile = await syncTelegramProfile(user.telegramId);
+    if (profile) {
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          photoUrl: profile.photoUrl,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          telegramUsername: profile.username || user.telegramUsername,
+          ...(profile.username && profile.username !== user.telegramUsername && {
+            oldTelegramUsername: user.telegramUsername,
+            usernameUpdatedAt: new Date(),
+          })
+        }
+      }).catch(e => console.error('[refreshToken] Profile update failed:', e));
+    }
 
     res.json({
       success: true,
@@ -682,12 +790,12 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
         user: {
           id: user.id,
           telegramId: user.telegramId.toString(),
-          telegramUsername: user.telegramUsername,
-          firstName: user.firstName,
-          lastName: user.lastName,
+          telegramUsername: profile?.username || user.telegramUsername,
+          firstName: profile?.firstName || user.firstName,
+          lastName: profile?.lastName || user.lastName,
           role: user.role,
           adminRole: user.adminRole,
-          photoUrl,
+          photoUrl: profile?.photoUrl || null,
         },
       },
     });
@@ -826,7 +934,7 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
-      select: { telegramId: true },
+      select: { telegramId: true, telegramUsername: true },
     });
 
     if (!user) {
@@ -834,8 +942,34 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
       return;
     }
 
-    const photoUrl = await fetchTelegramPhotoUrl(user.telegramId);
-    res.json({ success: true, data: { photoUrl } });
+    const profile = await syncTelegramProfile(user.telegramId);
+
+    // Save it to DB if it's new (to ensure UI consistency)
+    if (profile) {
+      await prisma.user.update({
+        where: { id: req.user!.id },
+        data: { 
+          photoUrl: profile.photoUrl,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          telegramUsername: profile.username || user.telegramUsername,
+          ...(profile.username && profile.username !== user.telegramUsername && {
+            oldTelegramUsername: user.telegramUsername,
+            usernameUpdatedAt: new Date(),
+          })
+        }
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      data: { 
+        photoUrl: profile?.photoUrl || null,
+        firstName: profile?.firstName,
+        lastName: profile?.lastName,
+        telegramUsername: profile?.username
+      } 
+    });
   } catch (error) {
     console.error('[getPhoto]', error);
     res.status(500).json({ success: false, message: 'Server error' });

@@ -3,12 +3,12 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import * as mtprotoService from '../services/mtproto.service';
 import prisma from '../lib/prisma';
 
-// ─── Profile photo cache ────────────────────────────────────────────────────
+// ─── Session info cache ───────────────────────────────────────────────────────
 // The status endpoint is polled every 1.5 s while an import is running.
-// Downloading the profile photo via MTProto on every tick wastes API calls.
-// Cache it for 10 minutes; it only changes if the user explicitly updates it.
-const profilePhotoCache: Record<string, { data: string; fetchedAt: number }> = {};
-const PROFILE_PHOTO_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Fetching getMe() and profile photo via MTProto on every tick wastes API calls and causes timeouts.
+// Cache it for 10 minutes; it rarely changes.
+const sessionInfoCache: Record<string, { data: any; fetchedAt: number }> = {};
+const SESSION_INFO_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Request a login verification code from Telegram.
@@ -49,6 +49,9 @@ export const loginController = async (req: AuthRequest, res: Response): Promise<
 
     const adminId = req.user?.id || 'admin';
     const result = await mtprotoService.login(adminId, code, password);
+    
+    // Invalidate cache after successful login
+    delete sessionInfoCache[adminId];
 
     res.json({
       success: true,
@@ -129,32 +132,32 @@ export const statusController = async (req: AuthRequest, res: Response): Promise
     let sessionInfo = null;
     if (client) {
       try {
-        const me: any = await client.getMe();
-        let profilePhoto = null;
-        try {
-          const now = Date.now();
-          const cached = profilePhotoCache[adminId];
-          if (cached && now - cached.fetchedAt < PROFILE_PHOTO_TTL_MS) {
-            // Serve from cache — skip the MTProto round-trip entirely
-            profilePhoto = cached.data;
-          } else {
+        const now = Date.now();
+        const cached = sessionInfoCache[adminId];
+        if (cached && now - cached.fetchedAt < SESSION_INFO_TTL_MS) {
+          sessionInfo = cached.data;
+        } else {
+          const me: any = await client.getMe();
+          let profilePhoto = null;
+          try {
             const photoBuffer = await client.downloadProfilePhoto('me');
             if (photoBuffer && photoBuffer.length > 0) {
               profilePhoto = `data:image/jpeg;base64,${photoBuffer.toString('base64')}`;
-              profilePhotoCache[adminId] = { data: profilePhoto, fetchedAt: now };
             }
+          } catch (photoErr) {
+            console.warn('Failed to download profile photo:', photoErr);
           }
-        } catch (photoErr) {
-          console.warn('Failed to download profile photo:', photoErr);
-        }
 
-        sessionInfo = {
-          id: me?.id?.toString() || '',
-          name: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || me?.username || 'Telegram User',
-          username: me?.username ? `@${me?.username}` : null,
-          phone: me?.phone ? `+${me?.phone}` : null,
-          profilePhoto,
-        };
+          sessionInfo = {
+            id: me?.id?.toString() || '',
+            name: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || me?.username || 'Telegram User',
+            username: me?.username ? `@${me?.username}` : null,
+            phone: me?.phone ? `+${me?.phone}` : null,
+            profilePhoto,
+          };
+          
+          sessionInfoCache[adminId] = { data: sessionInfo, fetchedAt: now };
+        }
       } catch (meErr) {
         console.error('Failed to retrieve session info:', meErr);
       }
@@ -182,7 +185,7 @@ export const logoutController = async (req: AuthRequest, res: Response): Promise
   try {
     const adminId = req.user?.id || 'admin';
     await mtprotoService.logoutClient(adminId);
-    delete profilePhotoCache[adminId]; // Invalidate cached photo on logout
+    delete sessionInfoCache[adminId]; // Invalidate cached session on logout
     res.json({
       success: true,
       message: 'Logged out successfully.',
