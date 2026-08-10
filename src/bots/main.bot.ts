@@ -139,8 +139,6 @@ mainBot.on('message:successful_payment', async (ctx) => {
   if (!rawPayload) return;
 
   try {
-    let orderIds: string[] = [];
-
     if (rawPayload.startsWith('attempt:')) {
       const attemptId = rawPayload.substring(8);
       console.log(`[MainBot] ⭐️ Payment Received for attempt: ${attemptId}`);
@@ -201,9 +199,9 @@ mainBot.on('message:successful_payment', async (ctx) => {
           { attempts: 3, backoff: { type: 'exponential', delay: 5000 } }
         );
       }
-    }
 
-    await ctx.reply(`✅ *Payment Successful!* ⭐️\n\nYour orders have been created and confirmed. The bot will start sending your videos in this chat immediately!`, { parse_mode: 'Markdown' });
+      await ctx.reply(`✅ *Payment Successful!* ⭐️\n\nYour orders have been created and confirmed. The bot will start sending your videos in this chat immediately!`, { parse_mode: 'Markdown' });
+    }
 
   } catch (err) {
     console.error('[MainBot] Error processing successful payment:', err);

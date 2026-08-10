@@ -445,7 +445,7 @@ export class CategoryBot {
           
           if (chunk.length === 1) {
             const video = chunk[0];
-            await this.bot.api.sendVideo(Number(userTelegramId), video.fileId, {
+            await this.bot.api.sendVideo(userTelegramId.toString(), video.fileId, {
               protect_content: true,
               disable_notification: true
             });
@@ -454,7 +454,7 @@ export class CategoryBot {
               type: 'video',
               media: v.fileId
             }));
-            await this.bot.api.sendMediaGroup(Number(userTelegramId), mediaGroup as any, {
+            await this.bot.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
               protect_content: true,
               disable_notification: true
             });
@@ -471,7 +471,7 @@ export class CategoryBot {
             // Send friendly message to the user before failing
             try {
               await this.bot?.api.sendMessage(
-                Number(userTelegramId),
+                userTelegramId.toString(),
                 `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
                 { parse_mode: 'Markdown' }
               );
