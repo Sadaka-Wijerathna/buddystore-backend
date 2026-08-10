@@ -400,6 +400,7 @@ export function stopImport(adminId: string) {
 /**
  * Starts importing videos from the source chat and forwards them to target bot.
  * Supports resumeJobId for resuming interrupted imports.
+ * startMessageId / endMessageId define an optional message ID range (inclusive).
  */
 export async function startImport(
   adminId: string,
@@ -408,7 +409,9 @@ export async function startImport(
   delayMs: number = 2000,
   resumeJobId?: string,
   limitCount?: number,
-  skipExisting: boolean = true
+  skipExisting: boolean = true,
+  startMessageId?: number,
+  endMessageId?: number
 ) {
   const currentProgress = importProgressMap[adminId];
   if (currentProgress && currentProgress.status === 'running') {
@@ -449,6 +452,8 @@ export async function startImport(
         total: 0,
         limitCount,
         skipExisting,
+        startMessageId: startMessageId ?? null,
+        endMessageId: endMessageId ?? null,
         message: 'Initializing import background worker...',
         logs: JSON.stringify([`[${new Date().toLocaleTimeString()}] Initializing import background worker...`]),
       },
@@ -493,10 +498,23 @@ export async function startImport(
 
       const videoIds: number[] = [];
       
+      // Resolve range message IDs from job (supports resume) or fresh params
+      const jobStartId = resumeJobId ? (job.startMessageId ?? undefined) : startMessageId;
+      const jobEndId   = resumeJobId ? (job.endMessageId   ?? undefined) : endMessageId;
+
+      // Build iterMessages options:
+      //  - minId = jobStartId - 1  so that message jobStartId itself IS included
+      //  - maxId = jobEndId        so that only messages up to jobEndId are fetched
+      //  - If skipExisting checkpoint is set AND no explicit start, apply lastMsgId as minId
+      const effectiveMinId = jobStartId
+        ? jobStartId - 1
+        : (lastMsgId ?? undefined);
+
       // Use iterMessages with video filter. This is extremely fast and avoids downloading non-video messages.
       for await (const message of client.iterMessages(sourceEntity, {
         filter: new Api.InputMessagesFilterVideo(),
-        ...(lastMsgId ? { minId: lastMsgId } : {}),
+        ...(effectiveMinId ? { minId: effectiveMinId } : {}),
+        ...(jobEndId       ? { maxId: jobEndId }        : {}),
       })) {
         if (controller.stop) break;
         videoIds.push((message as Api.Message).id);
