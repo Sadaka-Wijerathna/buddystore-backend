@@ -52,8 +52,7 @@ async function bootstrap() {
 
       // Mount webhook router AFTER bots are initialized so the categoryBots
       // registry is fully populated before routes are registered.
-      app.use('/webhooks', createWebhookRouter());
-
+      // (Moved to app.ts to avoid being trapped behind the 404 handler)
       console.log('✅ All bot webhooks registered');
     }
   } else {

@@ -66,12 +66,15 @@ app.get('/health', (_req, res) => {
 });
 
 // ─── Telegram Webhook Routes ──────────────────────────────────────────────────
-// Mounted dynamically from server.ts AFTER initCategoryBots() populates the
-// registry. See server.ts → mountWebhookRouter().
-// MUST be mounted BEFORE sanitizeInput so the Telegram JSON payload is not mutated.
+let _webhookRouter: express.Router | null = null;
 app.use('/webhooks', (req, res, next) => {
   console.log(`[Webhook] 📥 Incoming request: ${req.method} ${req.url}`);
-  next();
+  if (!_webhookRouter) {
+    // Lazy-load to ensure categoryBots are populated by server.ts bootstrap
+    const { createWebhookRouter } = require('./routes/webhook.routes');
+    _webhookRouter = createWebhookRouter();
+  }
+  _webhookRouter(req, res, next);
 });
 
 // ─── API Middleware (applied only after webhook routes) ───────────────────────
