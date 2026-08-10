@@ -407,6 +407,99 @@ export class CategoryBot {
     const botRecord = await this.getBotRecord();
     if (!botRecord) throw new Error(`Bot record not found for category: ${this.category}`);
 
+    // Unrecoverable error descriptions — stop entire delivery
+    const isUnrecoverable = (desc: string) =>
+      desc.includes('chat not found') ||
+      desc.includes('bot was blocked by the user') ||
+      desc.includes('user is deactivated') ||
+      desc.includes('have no rights to send');
+
+    // ── Helper: send a single video with up to 3 retries ─────────────────────
+    const trySendSingle = async (fileId: string): Promise<boolean> => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (!this.bot) throw new Error(`${this.name} has no token configured`);
+          await this.bot.api.sendVideo(userTelegramId.toString(), fileId, {
+            protect_content: true,
+            disable_notification: true,
+          });
+          return true;
+        } catch (error: any) {
+          const description: string = error?.description ?? '';
+          const errorCode: number = error?.error_code ?? 0;
+
+          if (isUnrecoverable(description)) {
+            try {
+              await this.bot?.api.sendMessage(
+                userTelegramId.toString(),
+                `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
+                { parse_mode: 'Markdown' }
+              );
+            } catch (_) { /* ignore if we can't reach the user */ }
+            throw new Error(
+              `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
+              `The user likely never started the bot (@${this.name}).`
+            );
+          }
+
+          if (errorCode === 429) {
+            const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
+            console.warn(`[${this.name}] Rate limited (429). Waiting ${retryAfterSec}s before retry...`);
+            await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
+            continue;
+          }
+
+          console.warn(`[${this.name}] Attempt ${attempt}/3 failed: ${description}`);
+          if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+      return false;
+    };
+
+    // ── Helper: send a media group with up to 3 retries ──────────────────────
+    const trySendGroup = async (chunk: { fileId: string }[]): Promise<boolean> => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          if (!this.bot) throw new Error(`${this.name} has no token configured`);
+          const mediaGroup = chunk.map(v => ({ type: 'video', media: v.fileId }));
+          await this.bot.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
+            protect_content: true,
+            disable_notification: true,
+          });
+          return true;
+        } catch (error: any) {
+          const description: string = error?.description ?? '';
+          const errorCode: number = error?.error_code ?? 0;
+
+          if (isUnrecoverable(description)) {
+            try {
+              await this.bot?.api.sendMessage(
+                userTelegramId.toString(),
+                `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
+                { parse_mode: 'Markdown' }
+              );
+            } catch (_) { /* ignore if we can't reach the user */ }
+            throw new Error(
+              `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
+              `The user likely never started the bot (@${this.name}).`
+            );
+          }
+
+          if (errorCode === 429) {
+            const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
+            console.warn(`[${this.name}] Rate limited (429). Waiting ${retryAfterSec}s before retry...`);
+            await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
+            continue;
+          }
+
+          console.warn(`[${this.name}] Attempt ${attempt}/3 failed for group: ${description}`);
+          if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+      return false;
+    };
+
+    // ── Main delivery loop ────────────────────────────────────────────────────
     // Get videos that haven't been sent to this user yet
     const videos = await prisma.videos.findMany({
       where: {
@@ -423,6 +516,8 @@ export class CategoryBot {
     }
 
     let sent = 0;
+    // Track IDs of every video we've attempted (for top-up exclusion)
+    const attemptedVideoIds = new Set<string>(videos.map(v => v.id));
 
     const useGroups = videos.length > 5;
     const chunkSize = useGroups ? 10 : 1;
@@ -430,83 +525,20 @@ export class CategoryBot {
     for (let i = 0; i < videos.length; i += chunkSize) {
       const chunk = videos.slice(i, i + chunkSize);
 
-      // Unrecoverable error descriptions — stop entire delivery
-      const isUnrecoverable = (desc: string) =>
-        desc.includes('chat not found') ||
-        desc.includes('bot was blocked by the user') ||
-        desc.includes('user is deactivated') ||
-        desc.includes('have no rights to send');
-
-      // Attempt send with up to 3 retries for transient errors
       let success = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          if (!this.bot) throw new Error(`${this.name} has no token configured`);
-          
-          if (chunk.length === 1) {
-            const video = chunk[0];
-            await this.bot.api.sendVideo(userTelegramId.toString(), video.fileId, {
-              protect_content: true,
-              disable_notification: true
-            });
-          } else {
-            const mediaGroup = chunk.map(v => ({
-              type: 'video',
-              media: v.fileId
-            }));
-            await this.bot.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
-              protect_content: true,
-              disable_notification: true
-            });
-          }
-          
-          success = true;
-          break;
-        } catch (error: any) {
-          const description: string = error?.description ?? '';
-          const errorCode: number = error?.error_code ?? 0;
-
-          // Unrecoverable — notify the user and throw
-          if (isUnrecoverable(description)) {
-            // Send friendly message to the user before failing
-            try {
-              await this.bot?.api.sendMessage(
-                userTelegramId.toString(),
-                `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
-                { parse_mode: 'Markdown' }
-              );
-            } catch (_) { /* ignore if we can't reach the user */ }
-            throw new Error(
-              `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
-              `The user likely never started the bot (@${this.name}).`
-            );
-          }
-
-          // 429 Too Many Requests — respect retry_after from Telegram
-          if (errorCode === 429) {
-            const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
-            console.warn(`[${this.name}] Rate limited (429). Waiting ${retryAfterSec}s before retry...`);
-            await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
-            continue; // retry same chunk
-          }
-
-          // Transient error — wait 2s and retry
-          console.warn(`[${this.name}] Attempt ${attempt}/3 failed for chunk at index ${i}: ${description}`);
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 2000));
-          }
-        }
+      if (chunk.length === 1) {
+        success = await trySendSingle(chunk[0].fileId);
+      } else {
+        success = await trySendGroup(chunk);
       }
 
       if (success) {
-        // Record the delivery for all videos in chunk
         await prisma.videoDelivery.createMany({
           data: chunk.map(v => ({ orderId, videoId: v.id, userId })),
-          skipDuplicates: true
+          skipDuplicates: true,
         });
-
         sent += chunk.length;
-        onProgress(sent, videos.length);
+        onProgress(sent, count);
       } else {
         console.error(`[${this.name}] Skipping chunk at index ${i} after 3 failed attempts`);
       }
@@ -515,6 +547,61 @@ export class CategoryBot {
       await acquireRateToken();
       // Per-chat limit: also wait before next chunk
       await new Promise((r) => setTimeout(r, useGroups ? 1500 : 1000));
+    }
+
+    // ── Top-up loop: compensate for failed sends ──────────────────────────────
+    // If some chunks failed, fetch replacement videos from the store (not yet
+    // attempted for this user/order) and deliver them to fill the shortfall.
+    // Runs up to MAX_TOPUP_PASSES extra passes to avoid an infinite loop when
+    // stock is genuinely too low to fulfil the order.
+    const MAX_TOPUP_PASSES = 3;
+    let topupPass = 0;
+
+    while (sent < count && topupPass < MAX_TOPUP_PASSES) {
+      topupPass++;
+      const shortfall = count - sent;
+      console.log(`[${this.name}] Top-up pass ${topupPass}/${MAX_TOPUP_PASSES}: need ${shortfall} more video(s) for order ${orderId}`);
+
+      const extraVideos = await prisma.videos.findMany({
+        where: {
+          category: this.category,
+          videoDeliveries: { none: { userId } },
+          id: { notIn: [...attemptedVideoIds] },
+        },
+        take: shortfall,
+      });
+
+      if (extraVideos.length === 0) {
+        console.warn(`[${this.name}] Top-up pass ${topupPass}: no more stock available for order ${orderId}. Stopping.`);
+        break;
+      }
+
+      for (const v of extraVideos) attemptedVideoIds.add(v.id);
+
+      // Top-up sends are always single-video to maximise success rate
+      for (const video of extraVideos) {
+        if (sent >= count) break;
+
+        const success = await trySendSingle(video.fileId);
+
+        if (success) {
+          await prisma.videoDelivery.createMany({
+            data: [{ orderId, videoId: video.id, userId }],
+            skipDuplicates: true,
+          });
+          sent++;
+          onProgress(sent, count);
+        } else {
+          console.error(`[${this.name}] Top-up: failed to send video ${video.id} for order ${orderId}`);
+        }
+
+        await acquireRateToken();
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+
+    if (sent < count) {
+      console.warn(`[${this.name}] Order ${orderId} under-delivered after ${MAX_TOPUP_PASSES} top-up passes: ${sent}/${count}`);
     }
 
     return sent;

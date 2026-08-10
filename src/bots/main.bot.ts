@@ -11,6 +11,43 @@ mainBot.catch((err) => {
   console.error('[MainBot] ❌ Global Bot Error:', err);
 });
 
+// ─── Global Sync Middleware ───────────────────────────────────────────────────
+// Whenever a user interacts with the bot, we check if their username or name has changed
+// and silently update the database so they can always log in with their latest username.
+mainBot.use(async (ctx, next) => {
+  if (ctx.from && ctx.from.id) {
+    // Fire and forget so we don't block the actual bot command
+    prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) }, select: { id: true, telegramUsername: true, firstName: true, lastName: true } })
+      .then(user => {
+        if (user) {
+          const currentUsername = (ctx.from?.username || '').toLowerCase();
+          const dbUsername = (user.telegramUsername || '').toLowerCase();
+          
+          if (
+            currentUsername !== dbUsername || 
+            user.firstName !== ctx.from?.first_name || 
+            user.lastName !== (ctx.from?.last_name || null)
+          ) {
+            const isUsernameChanged = currentUsername && currentUsername !== dbUsername;
+            prisma.user.update({
+              where: { id: user.id },
+              data: {
+                telegramUsername: ctx.from?.username || user.telegramUsername, // use fallback if they removed it
+                firstName: ctx.from?.first_name,
+                lastName: ctx.from?.last_name || null,
+                ...(isUsernameChanged && {
+                  oldTelegramUsername: user.telegramUsername,
+                  usernameUpdatedAt: new Date(),
+                })
+              }
+            }).catch(() => {});
+          }
+        }
+      }).catch(() => {});
+  }
+  return next();
+});
+
  mainBot.command('start', async (ctx: Context) => {
   const payload = ctx.match as string | undefined; // The token passed in ?start=TOKEN
   const from = ctx.from;

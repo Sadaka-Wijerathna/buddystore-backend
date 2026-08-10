@@ -10,6 +10,7 @@ import { InputFile } from 'grammy';
 import jwt from 'jsonwebtoken';
 import config from '../config';
 import { dispatchNotification } from './notification.controller';
+import { syncTelegramProfile } from './auth.controller';
 
 // ─── Get all bots with stats ───────────────────────────────────────────────
 export const getBots = async (_req: AuthRequest, res: Response): Promise<void> => {
@@ -448,8 +449,9 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
           lastIpAddress: true,
           deviceType: true,
           lastLoginAt: true,
+          photoUrl: true,
           createdAt: true,
-          _count: { select: { orders: true } },
+          orders: { select: { receiptUrl: true, createdAt: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -461,13 +463,55 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
 
     const bannedIpSet = new Set(bannedIps.map(b => b.ip));
 
-    const mappedUsers = users.map(u => ({
-      ...u,
-      telegramId: u.telegramId ? u.telegramId.toString() : null,
-      ipFlagged: !!(u.lastIpAddress && bannedIpSet.has(u.lastIpAddress)),
-    }));
+    const mappedUsers = users.map(u => {
+      const groups = new Set<string>();
+      u.orders.forEach(o => {
+        const timeKey = Math.floor(new Date(o.createdAt).getTime() / 5000);
+        const key = `${o.receiptUrl || 'no-receipt'}_${timeKey}`;
+        groups.add(key);
+      });
+      
+      const { orders, ...rest } = u;
+      return {
+        ...rest,
+        _count: { orders: groups.size },
+        telegramId: rest.telegramId ? rest.telegramId.toString() : null,
+        ipFlagged: !!(rest.lastIpAddress && bannedIpSet.has(rest.lastIpAddress)),
+      };
+    });
 
     res.json({ success: true, data: mappedUsers, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+
+    // Background profile picture and details sync
+    // Process sequentially to avoid Telegram rate-limiting
+    (async () => {
+      for (const u of users) {
+        if (!u.telegramId) continue;
+        try {
+          const profile = await syncTelegramProfile(u.telegramId);
+          if (profile) {
+            const isUsernameChanged = profile.username && profile.username !== u.telegramUsername;
+            await prisma.user.update({
+              where: { id: u.id },
+              data: { 
+                photoUrl: profile.photoUrl,
+                firstName: profile.firstName,
+                lastName: profile.lastName,
+                telegramUsername: profile.username || u.telegramUsername,
+                ...(isUsernameChanged && {
+                  oldTelegramUsername: u.telegramUsername,
+                  usernameUpdatedAt: new Date(),
+                })
+              }
+            });
+          }
+          // Small delay to respect Telegram's API limits
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (err) {
+          // Ignore failures
+        }
+      }
+    })();
   } catch (error) {
     console.error('[getUsers]', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -498,7 +542,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response): Promise<voi
         where,
         include: {
           user: {
-            select: { telegramUsername: true, firstName: true, lastName: true },
+            select: { telegramUsername: true, firstName: true, lastName: true, photoUrl: true },
           },
           _count: { select: { videoDeliveries: true } },
         },
@@ -856,6 +900,8 @@ export const getUserOrders = async (req: AuthRequest, res: Response): Promise<vo
           delivered: o._count.videoDeliveries,
           status: o.status,
           priceAmount: o.priceAmount,
+          paymentMethod: o.paymentMethod,
+          receiptUrl: o.receiptUrl,
           createdAt: o.createdAt,
           confirmedAt: o.confirmedAt,
         })),
@@ -1073,9 +1119,20 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
         category: true,
         priceAmount: true,
         videoCount: true,
+        receiptUrl: true,
         createdAt: true,
       },
     });
+
+    const countBatches = (ordersList: typeof orders) => {
+      const groups = new Set<string>();
+      for (const o of ordersList) {
+        const timeKey = Math.floor(new Date(o.createdAt).getTime() / 5000);
+        const key = `${o.receiptUrl || 'no-receipt'}_${timeKey}`;
+        groups.add(key);
+      }
+      return groups.size;
+    };
 
     // Daily revenue — last 14 days
     const now = new Date();
@@ -1091,7 +1148,7 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
       dailyRevenue.push({
         date: dateStr,
         revenue: dayOrders.reduce((s, o) => s + Number(o.priceAmount), 0),
-        orders: dayOrders.length,
+        orders: countBatches(dayOrders),
       });
     }
 
@@ -1118,9 +1175,11 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
     const revenueOrders = orders.filter(o => ['CONFIRMED', 'DELIVERING', 'COMPLETED'].includes(o.status));
     const activeOrders  = orders.filter(o => o.status !== 'REJECTED');
     const totalRevenue  = revenueOrders.reduce((s, o) => s + Number(o.priceAmount), 0);
-    const completed     = orders.filter(o => o.status === 'COMPLETED').length;
+    
+    const activeBatchesCount = countBatches(activeOrders);
+    const completedBatchesCount = countBatches(orders.filter(o => o.status === 'COMPLETED'));
     const weekAgo       = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const weeklyOrders  = activeOrders.filter(o => new Date(o.createdAt) >= weekAgo).length;
+    const weeklyOrdersList = activeOrders.filter(o => new Date(o.createdAt) >= weekAgo);
 
     res.json({
       success: true,
@@ -1130,10 +1189,10 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
         categoryBreakdown,
         topStats: {
           totalRevenue,
-          totalOrders: activeOrders.length,
-          avgOrderValue: revenueOrders.length ? Math.round(totalRevenue / revenueOrders.length) : 0,
-          completionRate: activeOrders.length ? Math.round((completed / activeOrders.length) * 100) : 0,
-          weeklyOrders,
+          totalOrders: activeBatchesCount,
+          avgOrderValue: countBatches(revenueOrders) ? Math.round(totalRevenue / countBatches(revenueOrders)) : 0,
+          completionRate: activeBatchesCount ? Math.round((completedBatchesCount / activeBatchesCount) * 100) : 0,
+          weeklyOrders: countBatches(weeklyOrdersList),
         },
       },
     });

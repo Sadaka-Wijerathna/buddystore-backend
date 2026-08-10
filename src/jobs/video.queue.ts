@@ -97,37 +97,77 @@ async function processJob(jobId: string) {
     }
   );
 
-  // Job completed
-  await prisma.videoDeliveryJob.update({ where: { id: jobId }, data: { status: 'COMPLETED', progress: 100 } });
-  await prisma.order.update({
-    where: { id: orderId },
-    data: { status: 'COMPLETED', completedAt: new Date() },
-  });
+  // ── Conditional completion ────────────────────────────────────────────────
+  if (sentCount >= videoCount) {
+    // ✅ Fully delivered
+    await prisma.videoDeliveryJob.update({ where: { id: jobId }, data: { status: 'COMPLETED', progress: 100 } });
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'COMPLETED', completedAt: new Date() },
+    });
 
-  // Message 1: Delivery summary (permanent, no keyboard)
-  try {
-    const order = await prisma.order.findUnique({ where: { id: orderId }, include: { bot: true } });
-    const categoryLabel = order?.bot?.name ?? category.replace(/_/g, ' ');
+    // Message: Delivery summary (permanent, no keyboard)
+    try {
+      const order = await prisma.order.findUnique({ where: { id: orderId }, include: { bot: true } });
+      const categoryLabel = order?.bot?.name ?? category.replace(/_/g, ' ');
 
-    await mainBot.api.sendMessage(
-      userTelegramId.toString(),
-      `🎉 *Delivery Complete!*\n\n` +
-      `All *${sentCount} video${sentCount !== 1 ? 's' : ''}* from the *${categoryLabel}* collection have been delivered successfully!\n\n` +
-      `📦 *Order ID:* \`${orderId}\`\n` +
-      `🎬 *Videos Sent:* ${sentCount}/${videoCount}\n` +
-      `🔒 *Note:* These videos are for your personal use only. Forwarding is disabled.`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (err) {
-    console.error(`[Job] Failed to send delivery summary for order ${orderId}:`, err);
+      await mainBot.api.sendMessage(
+        userTelegramId.toString(),
+        `🎉 *Delivery Complete!*\n\n` +
+        `All *${sentCount} video${sentCount !== 1 ? 's' : ''}* from the *${categoryLabel}* collection have been delivered successfully!\n\n` +
+        `📦 *Order ID:* \`${orderId}\`\n` +
+        `🎬 *Videos Sent:* ${sentCount}/${videoCount}\n` +
+        `🔒 *Note:* These videos are for your personal use only. Forwarding is disabled.`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (err) {
+      console.error(`[Job] Failed to send delivery summary for order ${orderId}:`, err);
+    }
+
+    io?.to(`order:${orderId}`).emit('order:status', {
+      orderId, status: 'COMPLETED', delivered: sentCount, total: videoCount, percentComplete: 100,
+    });
+    console.log(`[Job] Order ${orderId} completed: ${sentCount}/${videoCount} videos sent`);
+
+  } else {
+    // ⚠️ Under-delivered — mark job FAILED and reset order to CONFIRMED
+    // so the admin can see it needs attention and manually re-trigger.
+    const percent = Math.round((sentCount / videoCount) * 100);
+    const errorMsg = `Under-delivered: only ${sentCount}/${videoCount} videos sent (store stock may be too low)`;
+
+    await prisma.videoDeliveryJob.update({
+      where: { id: jobId },
+      data: { status: 'FAILED', progress: percent, error: errorMsg },
+    });
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'CONFIRMED' }, // Reset so admin can review & re-trigger
+    });
+
+    // Notify user of partial delivery
+    try {
+      const order = await prisma.order.findUnique({ where: { id: orderId }, include: { bot: true } });
+      const categoryLabel = order?.bot?.name ?? category.replace(/_/g, ' ');
+      const remaining = videoCount - sentCount;
+
+      await mainBot.api.sendMessage(
+        userTelegramId.toString(),
+        `⚠️ *Partial Delivery Notice*\n\n` +
+        `We successfully sent *${sentCount} out of ${videoCount}* videos from your *${categoryLabel}* order.\n\n` +
+        `📦 *Order ID:* \`${orderId}\`\n` +
+        `📉 *Remaining:* ${remaining} video${remaining !== 1 ? 's' : ''}\n\n` +
+        `Our team has been notified and will complete the delivery shortly. We apologise for the inconvenience!`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (err) {
+      console.error(`[Job] Failed to send partial delivery notice for order ${orderId}:`, err);
+    }
+
+    io?.to(`order:${orderId}`).emit('order:status', {
+      orderId, status: 'CONFIRMED', delivered: sentCount, total: videoCount, percentComplete: Math.round((sentCount / videoCount) * 100),
+    });
+    console.warn(`[Job] Order ${orderId} UNDER-DELIVERED: ${sentCount}/${videoCount} videos sent. Reset to CONFIRMED.`);
   }
-
-
-
-  io?.to(`order:${orderId}`).emit('order:status', {
-    orderId, status: 'COMPLETED', delivered: sentCount, total: videoCount, percentComplete: 100,
-  });
-  console.log(`[Job] Order ${orderId} completed: ${sentCount}/${videoCount} videos sent`);
 }
 
 // ─── Poll loop using setTimeout chain (supports dynamic backoff) ──────────────
