@@ -64,12 +64,28 @@ export const loginController = async (req: AuthRequest, res: Response): Promise<
 };
 
 /**
+ * Parse a Telegram message link like https://t.me/channelname/123 or
+ * https://t.me/c/1234567890/123 and return the numeric message ID.
+ * Returns undefined if the link is invalid.
+ */
+function parseTelegramMessageId(link: string | undefined): number | undefined {
+  if (!link) return undefined;
+  const clean = link.trim();
+  // Matches https://t.me/username/123 or https://t.me/c/channel_id/123
+  const m = clean.match(/t\.me\/(?:c\/\d+\/|[^/]+\/)(\d+)/);
+  if (m) return parseInt(m[1], 10);
+  // Plain numeric string fallback
+  if (/^\d+$/.test(clean)) return parseInt(clean, 10);
+  return undefined;
+}
+
+/**
  * Start the background importing process.
  * POST /api/v1/admin/telegram/start-import
  */
 export const startImportController = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { sourceChat, targetBot, delayMs, limitCount, skipExisting } = req.body;
+    const { sourceChat, targetBot, delayMs, limitCount, skipExisting, startLink, endLink } = req.body;
     if (!sourceChat || !targetBot) {
       res.status(400).json({ success: false, message: 'sourceChat and targetBot are required.' });
       return;
@@ -79,6 +95,8 @@ export const startImportController = async (req: AuthRequest, res: Response): Pr
     const delay = delayMs ? parseInt(String(delayMs), 10) : 2000;
     const parsedLimit = limitCount ? parseInt(String(limitCount), 10) : undefined;
     const parsedSkip = skipExisting !== undefined ? Boolean(skipExisting) : true;
+    const startMessageId = parseTelegramMessageId(startLink);
+    const endMessageId   = parseTelegramMessageId(endLink);
     
     const progress = await mtprotoService.startImport(
       adminId,
@@ -87,7 +105,9 @@ export const startImportController = async (req: AuthRequest, res: Response): Pr
       delay,
       undefined,
       parsedLimit,
-      parsedSkip
+      parsedSkip,
+      startMessageId,
+      endMessageId
     );
 
     res.json({

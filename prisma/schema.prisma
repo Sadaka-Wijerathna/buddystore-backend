@@ -523,20 +523,22 @@ enum BroadcastStatus {
 // Telegram Import Jobs (Persistent Worker Logs)
 // ─────────────────────────────────────────
 model TelegramImportJob {
-  id           String                  @id @default(uuid())
-  adminId      String
-  sourceChat   String
-  targetBot    String
-  status       TelegramImportJobStatus @default(IDLE)
-  progress     Int                     @default(0)
-  total        Int                     @default(0)
-  limitCount   Int?
-  skipExisting Boolean                 @default(true)
-  message      String?
-  error        String?
-  logs         Json?                   // To store an array of event log strings
-  createdAt    DateTime                @default(now())
-  updatedAt    DateTime                @updatedAt
+  id              String                  @id @default(uuid())
+  adminId         String
+  sourceChat      String
+  targetBot       String
+  status          TelegramImportJobStatus @default(IDLE)
+  progress        Int                     @default(0)
+  total           Int                     @default(0)
+  limitCount      Int?
+  skipExisting    Boolean                 @default(true)
+  startMessageId  Int?                    // optional range start (message ID)
+  endMessageId    Int?                    // optional range end (message ID)
+  message         String?
+  error           String?
+  logs            Json?                   // To store an array of event log strings
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
 
   @@map("telegram_import_jobs")
 }
