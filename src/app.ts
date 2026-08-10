@@ -17,6 +17,7 @@ import orderRoutes from './routes/order.routes';
 import adminRoutes from './routes/admin.routes';
 import publicRoutes from './routes/public.routes';
 import pdfAdminRoutes from './routes/pdf.routes';
+import debugRoutes from './routes/debug.routes';
 
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
@@ -77,6 +78,7 @@ app.use('/webhooks', (req, res, next) => {
 app.use(sanitizeInput);
 
 // ─── Routes ────────────────────────────────────────────────────────────────────
+app.use('/api/v1/debug', debugRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/orders', orderRoutes);
 app.use('/api/v1/admin', adminRoutes);
