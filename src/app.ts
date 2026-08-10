@@ -74,7 +74,11 @@ app.use('/webhooks', (req, res, next) => {
     const { createWebhookRouter } = require('./routes/webhook.routes');
     _webhookRouter = createWebhookRouter();
   }
-  _webhookRouter(req, res, next);
+  if (_webhookRouter) {
+    _webhookRouter(req, res, next);
+  } else {
+    next();
+  }
 });
 
 // ─── API Middleware (applied only after webhook routes) ───────────────────────
