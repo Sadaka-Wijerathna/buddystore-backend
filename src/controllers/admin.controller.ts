@@ -768,8 +768,9 @@ export const updateUserRole = async (req: AuthRequest, res: Response): Promise<v
 
     // Notify user via Telegram
     try {
+      const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
       const msg = role === 'ADMIN' 
-        ? "🚀 *Congratulations!* You have been promoted to an **Administrator** on [BuddyStore](https://buddystore.vercel.app)."
+        ? `🚀 *Congratulations!* You have been promoted to an **Administrator** on [BuddyStore](${frontendUrl}).`
         : "ℹ️ Your administrative privileges have been removed. You are now a standard User.";
       await mainBot.api.sendMessage(user.telegramId.toString(), msg, { parse_mode: 'Markdown' });
     } catch (e) {

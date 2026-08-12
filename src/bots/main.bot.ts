@@ -59,8 +59,9 @@ mainBot.use(async (ctx, next) => {
 
   // If no token in start payload, just greet
   if (!payload) {
+    const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
     await ctx.reply(
-      `👋 Welcome to BuddyStore!\n\nUse our website to register your account at https://buddystore.vercel.app/register`
+      `👋 Welcome to BuddyStore!\n\nUse our website to register your account at ${frontendUrl}/register`
     );
     return;
   }
@@ -143,11 +144,11 @@ mainBot.on('message', async (ctx: Context) => {
     where: { telegramId: BigInt(from.id) },
   });
 
-
+  const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
   if (user) {
-    await ctx.reply(`👋 Hi ${user.firstName}! Visit https://buddystore.vercel.app/dashboard to manage your account.`);
+    await ctx.reply(`👋 Hi ${user.firstName}! Visit ${frontendUrl}/dashboard to manage your account.`);
   } else {
-    await ctx.reply(`👋 Welcome! Register at https://buddystore.vercel.app/register to get started.`);
+    await ctx.reply(`👋 Welcome! Register at ${frontendUrl}/register to get started.`);
   }
 });
 
