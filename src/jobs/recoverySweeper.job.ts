@@ -37,7 +37,8 @@ export const startRecoverySweeper = () => {
            );
 
            // 2. Send Telegram API ping
-           const message = `⚠️ *Hey! You forgot your videos!*\n\nYou started an order for *${order.videoCount} ${order.category}* videos but never uploaded the payment receipt!\n\nPlease login to the website at https://buddystore.vercel.app/dashboard and complete your checkout so we can deliver them to you immediately.`;
+           const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
+           const message = `⚠️ *Hey! You forgot your videos!*\n\nYou started an order for *${order.videoCount} ${order.category}* videos but never uploaded the payment receipt!\n\nPlease login to the website at ${frontendUrl}/dashboard and complete your checkout so we can deliver them to you immediately.`;
            
            await mainBot.api.sendMessage(String(order.user.telegramId), message, { parse_mode: 'Markdown' });
 
