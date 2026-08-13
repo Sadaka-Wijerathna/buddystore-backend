@@ -16,7 +16,7 @@ const updates: { category: string; name: string }[] = [
   { category: 'SRI_LANKAN', name: 'BuddySLBot'      },
   { category: 'CCTV',       name: 'Buddycctv1Bot'   },
   { category: 'RAPE',       name: 'BuddyRkpeBot'    },
-  // PUBLIC kept as-is — add later
+  { category: 'PUBLIC',     name: 'BuddyPublicBot'  },
 ];
 
 async function run() {

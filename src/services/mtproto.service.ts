@@ -95,13 +95,28 @@ export async function switchAccount(adminId: string, phoneNumber: string) {
     try { await activeClients[adminId].disconnect(); } catch (_) {}
     delete activeClients[adminId];
   }
+
+  // Bug 7 Fix: clear the dialog cache so the new account's chats are fetched fresh.
+  // Without this, the dropdown serves the old account's channels for up to 5 minutes.
+  delete dialogCache[adminId];
   
   await prisma.setting.upsert({
     where: { key: `telegram_active_account_${adminId}` },
     update: { value: phoneNumber },
     create: { key: `telegram_active_account_${adminId}`, value: phoneNumber },
   });
+
+  // Bug 3 Fix: proactively connect the new account's client so the status endpoint
+  // returns authorized:true immediately after the switch (instead of waiting for the
+  // next API call to trigger a lazy reconnect).
+  try {
+    await getConnectedClient(adminId);
+  } catch (connectErr) {
+    console.warn('[mtproto] switchAccount: failed to pre-connect new client:', connectErr);
+    // Non-fatal — the next request will retry the connection.
+  }
 }
+
 
 /**
  * Helper to fetch API ID and Hash.
@@ -802,6 +817,18 @@ export async function startImport(
 
       for (let i = startIndex; i < totalVideos; i++) {
         if (controller.stop) {
+          // Bug 9 Fix: flush any restricted videos that were buffered in pendingPipes
+          // but not yet piped. Without this, 1–3 videos are silently dropped whenever
+          // the user stops mid-batch before the buffer fills to STREAM_PIPE_CONCURRENCY.
+          if (pendingPipes.length > 0) {
+            await updateJobProgress(
+              job.id, adminId,
+              { message: `Flushing ${pendingPipes.length} buffered video(s) before stopping...` },
+              `Stop requested — flushing ${pendingPipes.length} pending restricted video(s) before exit.`,
+              false
+            );
+            await flushPipes(true);
+          }
           await updateJobProgress(
             job.id,
             adminId,

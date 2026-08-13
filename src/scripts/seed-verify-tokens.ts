@@ -1,11 +1,18 @@
 /**
- * Seed Verified Bot Tokens for @buddyseller
- * Usage: npm run seed:verify-tokens
+ * Seed Verified Bot Tokens for a given Telegram user
+ *
+ * Usage:
+ *   npm run seed:verify-tokens -- <telegramUsername>
+ *   npm run seed:verify-tokens -- buddyseller
+ *
+ * Bug 14 Fix: Username is now read from process.argv[2] instead of being
+ * hardcoded. Falls back to 'buddyseller' when no argument is provided
+ * to preserve backward-compatible behaviour for existing deploys.
  */
 import 'dotenv/config';
 import prisma from '../lib/prisma';
 
-const TARGET_USERNAME = 'buddyseller';
+const TARGET_USERNAME = process.argv[2] || 'buddyseller';
 const CATEGORIES: string[] = ['MIXED', 'MOM_SON', 'SRI_LANKAN', 'CCTV', 'PUBLIC', 'RAPE'];
 
 async function main() {

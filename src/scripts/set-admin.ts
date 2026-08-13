@@ -1,13 +1,26 @@
 /**
  * Set a user's role to ADMIN by Telegram username
- * Usage: npx ts-node src/scripts/set-admin.ts
+ *
+ * Usage:
+ *   npx ts-node src/scripts/set-admin.ts <telegramUsername>
+ *   npx ts-node src/scripts/set-admin.ts buddyseller
+ *
+ * Bug 14 Fix: Username is now read from process.argv[2] instead of being
+ * hardcoded — no need to edit source to promote a different admin.
  */
 import 'dotenv/config';
 import prisma from '../lib/prisma';
 
-const TARGET_USERNAME = 'buddyseller';
+const TARGET_USERNAME = process.argv[2];
+
+if (!TARGET_USERNAME) {
+  console.error('❌ Usage: ts-node src/scripts/set-admin.ts <telegramUsername>');
+  process.exit(1);
+}
 
 async function main() {
+  console.log(`🔍 Looking up @${TARGET_USERNAME}...`);
+
   const user = await prisma.user.findFirst({
     where: { telegramUsername: { equals: TARGET_USERNAME, mode: 'insensitive' } },
   });
