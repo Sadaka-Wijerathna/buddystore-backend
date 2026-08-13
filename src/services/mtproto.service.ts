@@ -63,6 +63,45 @@ interface ImportProgress {
 
 const importProgressMap: Record<string, ImportProgress> = {};
 
+export interface TelegramAccount {
+  phoneNumber: string;
+  sessionString: string;
+  firstName: string;
+  username: string;
+}
+
+export async function getAccounts(adminId: string) {
+  const accountsSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_accounts_${adminId}` },
+  });
+  const accounts: TelegramAccount[] = accountsSetting && accountsSetting.value ? JSON.parse(accountsSetting.value) : [];
+  
+  const activeSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_active_account_${adminId}` },
+  });
+  
+  const legacySetting = await prisma.setting.findUnique({
+    where: { key: `telegram_mtproto_session_${adminId}` },
+  });
+
+  return {
+    accounts: accounts.map(a => ({ phoneNumber: a.phoneNumber, firstName: a.firstName, username: a.username })),
+    activeAccount: activeSetting?.value || (accounts.length > 0 ? accounts[0].phoneNumber : (legacySetting ? "legacy" : null))
+  };
+}
+
+export async function switchAccount(adminId: string, phoneNumber: string) {
+  if (activeClients[adminId]) {
+    try { await activeClients[adminId].disconnect(); } catch (_) {}
+    delete activeClients[adminId];
+  }
+  
+  await prisma.setting.upsert({
+    where: { key: `telegram_active_account_${adminId}` },
+    update: { value: phoneNumber },
+    create: { key: `telegram_active_account_${adminId}`, value: phoneNumber },
+  });
+}
 
 /**
  * Helper to fetch API ID and Hash.
@@ -196,18 +235,41 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
     delete activeClients[adminId];
   }
 
-  const sessionSetting = await prisma.setting.findUnique({
-    where: { key: `telegram_mtproto_session_${adminId}` },
+  let sessionString = '';
+  const accountsSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_accounts_${adminId}` },
   });
+  const accounts: TelegramAccount[] = accountsSetting && accountsSetting.value ? JSON.parse(accountsSetting.value) : [];
 
-  if (!sessionSetting || !sessionSetting.value) {
-    return null;
+  if (accounts.length > 0) {
+    const activeSetting = await prisma.setting.findUnique({
+      where: { key: `telegram_active_account_${adminId}` },
+    });
+    const activePhone = activeSetting?.value || accounts[0].phoneNumber;
+    const activeAccount = accounts.find(a => a.phoneNumber === activePhone) || accounts[0];
+    sessionString = activeAccount.sessionString;
+    
+    if (!activeSetting || activeSetting.value !== activeAccount.phoneNumber) {
+      await prisma.setting.upsert({
+        where: { key: `telegram_active_account_${adminId}` },
+        update: { value: activeAccount.phoneNumber },
+        create: { key: `telegram_active_account_${adminId}`, value: activeAccount.phoneNumber },
+      });
+    }
+  } else {
+    const sessionSetting = await prisma.setting.findUnique({
+      where: { key: `telegram_mtproto_session_${adminId}` },
+    });
+    if (!sessionSetting || !sessionSetting.value) {
+      return null;
+    }
+    sessionString = sessionSetting.value;
   }
 
   const { apiId, apiHash } = await getApiCredentials();
 
   const tryConnect = async (retries = 2): Promise<TelegramClient | null> => {
-    const client = new TelegramClient(new StringSession(sessionSetting.value), apiId, apiHash, {
+    const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
       connectionRetries: 5,
       baseLogger: new Logger('warn' as any),
     });
@@ -244,19 +306,56 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
 /**
  * Disconnect and clear the current session.
  */
-export async function logoutClient(adminId: string) {
-  if (activeClients[adminId]) {
-    try {
-      await activeClients[adminId].disconnect();
-    } catch (e) {
-      console.error(`Error disconnecting client during logout for admin ${adminId}:`, e);
+export async function logoutClient(adminId: string, phoneNumberToLogout?: string) {
+  const activeSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_active_account_${adminId}` },
+  });
+  
+  const targetPhone = phoneNumberToLogout || activeSetting?.value;
+  
+  if (!targetPhone) {
+    if (activeClients[adminId]) {
+      try { await activeClients[adminId].disconnect(); } catch (_) {}
+      delete activeClients[adminId];
     }
-    delete activeClients[adminId];
+    await prisma.setting.deleteMany({
+      where: { key: `telegram_mtproto_session_${adminId}` },
+    });
+    return;
   }
 
-  await prisma.setting.deleteMany({
-    where: { key: `telegram_mtproto_session_${adminId}` },
+  const accountsSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_accounts_${adminId}` },
   });
+  let accounts: TelegramAccount[] = accountsSetting && accountsSetting.value ? JSON.parse(accountsSetting.value) : [];
+  
+  const isLoggingOutActive = activeSetting?.value === targetPhone;
+  
+  if (isLoggingOutActive && activeClients[adminId]) {
+    try { await activeClients[adminId].disconnect(); } catch (_) {}
+    delete activeClients[adminId];
+  }
+  
+  accounts = accounts.filter(a => a.phoneNumber !== targetPhone);
+  
+  if (accounts.length > 0) {
+    await prisma.setting.upsert({
+      where: { key: `telegram_accounts_${adminId}` },
+      update: { value: JSON.stringify(accounts) },
+      create: { key: `telegram_accounts_${adminId}`, value: JSON.stringify(accounts) },
+    });
+    
+    if (isLoggingOutActive) {
+      await prisma.setting.update({
+        where: { key: `telegram_active_account_${adminId}` },
+        data: { value: accounts[0].phoneNumber }
+      });
+    }
+  } else {
+    await prisma.setting.deleteMany({ where: { key: `telegram_accounts_${adminId}` } });
+    await prisma.setting.deleteMany({ where: { key: `telegram_active_account_${adminId}` } });
+    await prisma.setting.deleteMany({ where: { key: `telegram_mtproto_session_${adminId}` } });
+  }
 }
 
 /**
@@ -345,11 +444,36 @@ export async function login(adminId: string, code: string, password?: string) {
 
     const sessionString = (client.session.save() as unknown as string) || '';
 
-    // Save session in database per admin
+    const me = await client.getMe() as Api.User;
+    const newAccount: TelegramAccount = {
+      phoneNumber,
+      sessionString,
+      firstName: me.firstName || '',
+      username: me.username || ''
+    };
+
+    const accountsSetting = await prisma.setting.findUnique({
+      where: { key: `telegram_accounts_${adminId}` },
+    });
+    let accounts: TelegramAccount[] = accountsSetting && accountsSetting.value ? JSON.parse(accountsSetting.value) : [];
+    
+    const existingIndex = accounts.findIndex(a => a.phoneNumber === phoneNumber);
+    if (existingIndex >= 0) {
+      accounts[existingIndex] = newAccount;
+    } else {
+      accounts.push(newAccount);
+    }
+
     await prisma.setting.upsert({
-      where: { key: `telegram_mtproto_session_${adminId}` },
-      update: { value: sessionString },
-      create: { key: `telegram_mtproto_session_${adminId}`, value: sessionString },
+      where: { key: `telegram_accounts_${adminId}` },
+      update: { value: JSON.stringify(accounts) },
+      create: { key: `telegram_accounts_${adminId}`, value: JSON.stringify(accounts) },
+    });
+    
+    await prisma.setting.upsert({
+      where: { key: `telegram_active_account_${adminId}` },
+      update: { value: phoneNumber },
+      create: { key: `telegram_active_account_${adminId}`, value: phoneNumber },
     });
 
     activeClients[adminId] = client;
