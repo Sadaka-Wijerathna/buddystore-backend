@@ -91,6 +91,8 @@ export const switchAccountController = async (req: AuthRequest, res: Response): 
       return;
     }
     await mtprotoService.switchAccount(adminId, phoneNumber);
+    // Bug 4 Fix: invalidate session info cache so status endpoint shows the new account immediately
+    delete sessionInfoCache[adminId];
     res.json({ success: true, message: 'Account switched successfully.' });
   } catch (error: any) {
     console.error('[telegram.switchAccount]', error);
@@ -106,7 +108,14 @@ export const logoutAccountController = async (req: AuthRequest, res: Response): 
   try {
     const adminId = req.user?.id || 'admin';
     const { phoneNumber } = req.body;
-    await mtprotoService.logoutClient(adminId, phoneNumber);
+    // Bug 5 Fix: The frontend sends "__legacy__" or empty string to indicate the legacy session.
+    // Treat both as undefined so logoutClient routes to the legacy branch (clears
+    // telegram_mtproto_session_* instead of trying to find a real account by phone number).
+    const targetPhone =
+      !phoneNumber || phoneNumber === '__legacy__' ? undefined : (phoneNumber as string);
+    await mtprotoService.logoutClient(adminId, targetPhone);
+    // Invalidate session info cache so the status endpoint reflects the logout immediately.
+    delete sessionInfoCache[adminId];
     res.json({ success: true, message: 'Account logged out successfully.' });
   } catch (error: any) {
     console.error('[telegram.logoutAccount]', error);
