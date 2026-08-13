@@ -64,6 +64,57 @@ export const loginController = async (req: AuthRequest, res: Response): Promise<
 };
 
 /**
+ * Get all logged-in accounts and the active account.
+ * GET /api/v1/admin/telegram/accounts
+ */
+export const accountsController = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const adminId = req.user?.id || 'admin';
+    const data = await mtprotoService.getAccounts(adminId);
+    res.json({ success: true, data });
+  } catch (error: any) {
+    console.error('[telegram.accounts]', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to fetch accounts.' });
+  }
+};
+
+/**
+ * Switch the active Telegram account.
+ * POST /api/v1/admin/telegram/switch-account
+ */
+export const switchAccountController = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const adminId = req.user?.id || 'admin';
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) {
+      res.status(400).json({ success: false, message: 'phoneNumber is required.' });
+      return;
+    }
+    await mtprotoService.switchAccount(adminId, phoneNumber);
+    res.json({ success: true, message: 'Account switched successfully.' });
+  } catch (error: any) {
+    console.error('[telegram.switchAccount]', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to switch account.' });
+  }
+};
+
+/**
+ * Logout a specific Telegram account.
+ * POST /api/v1/admin/telegram/logout-account
+ */
+export const logoutAccountController = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const adminId = req.user?.id || 'admin';
+    const { phoneNumber } = req.body;
+    await mtprotoService.logoutClient(adminId, phoneNumber);
+    res.json({ success: true, message: 'Account logged out successfully.' });
+  } catch (error: any) {
+    console.error('[telegram.logoutAccount]', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to logout account.' });
+  }
+};
+
+/**
  * Parse a Telegram message link like https://t.me/channelname/123 or
  * https://t.me/c/1234567890/123 and return the numeric message ID.
  * Returns undefined if the link is invalid.
