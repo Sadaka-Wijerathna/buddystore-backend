@@ -10,10 +10,10 @@ import * as path from 'path';
 
 // ─── Stream Piping Constants ──────────────────────────────────────────────────
 // Default chunk size, dynamically scaled up for files >2GB inside the pipe loop.
-const DEFAULT_STREAM_CHUNK_SIZE = 512 * 1024; // 512 KB
-// Reduced to 2 videos processed in parallel for Render server limits.
+const DEFAULT_STREAM_CHUNK_SIZE = 1024 * 1024; // 1 MB
+// Set to 3 videos processed in parallel to maximize speed on Render Free Tier limits.
 // Timeout fixes prevent hung senders from blocking the batch.
-const STREAM_PIPE_CONCURRENCY = 2;
+const STREAM_PIPE_CONCURRENCY = 3;
 
 /**
  * Async mutex that serializes concurrent async operations through a shared lock.
