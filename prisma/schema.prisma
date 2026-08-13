@@ -190,12 +190,15 @@ model Videos {
   category         String   // Free-form category slug
   botId            String
   mediaType        String   @default("video") // "video" | "photo"
+  fileSize         String?  // Exact file size in bytes
+  duration         Int?     // Duration in seconds
   collectedAt      DateTime @default(now())
 
   bot             Bot             @relation(fields: [botId], references: [id])
   videoDeliveries VideoDelivery[]
 
   @@index([category, collectedAt])
+  @@index([fileSize, duration])
   @@map("videos")
 }
 

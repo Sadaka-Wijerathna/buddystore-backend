@@ -89,6 +89,7 @@ router.post('/telegram/start-import', telegramController.startImportController);
 router.post('/telegram/resume-import', telegramController.resumeImportController);
 router.post('/telegram/stop-import', telegramController.stopImportController);
 router.post('/telegram/logout', telegramController.logoutController);
+router.post('/telegram/reset-checkpoints', telegramController.resetCheckpointsController);
 router.delete('/telegram/jobs', telegramController.clearAllJobsController);
 router.delete('/telegram/jobs/:id', telegramController.deleteJobController);
 

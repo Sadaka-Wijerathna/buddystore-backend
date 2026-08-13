@@ -50,6 +50,8 @@ interface PendingVideo {
   telegramUniqueId: string;
   thumbnailFileId?: string;
   mediaType: 'video' | 'photo';
+  fileSize?: string;
+  duration?: number;
 }
 
 export class CategoryBot {
@@ -211,7 +213,7 @@ export class CategoryBot {
 
     const thumbnailFileId = video.thumbnail?.file_id;
     console.log(`[${this.name}] ✅ Queuing video: ${video.file_unique_id}`);
-    this.queueMediaSave(video.file_id, video.file_unique_id, botRecord.id, 'video', thumbnailFileId);
+    this.queueMediaSave(video.file_id, video.file_unique_id, botRecord.id, 'video', thumbnailFileId, String(video.file_size || 0), video.duration);
     await ctx.react('👍').catch(() => {});
   }
 
@@ -228,7 +230,7 @@ export class CategoryBot {
 
     // Video notes don't have thumbnails in the Telegram API
     console.log(`[${this.name}] ✅ Queuing video note: ${videoNote.file_unique_id}`);
-    this.queueMediaSave(videoNote.file_id, videoNote.file_unique_id, botRecord.id, 'video', undefined);
+    this.queueMediaSave(videoNote.file_id, videoNote.file_unique_id, botRecord.id, 'video', undefined, String(videoNote.file_size || 0), videoNote.duration);
     await ctx.react('👍').catch(() => {});
   }
 
@@ -258,10 +260,18 @@ export class CategoryBot {
     await ctx.react('👍').catch(() => {});
   }
 
-  private queueMediaSave(fileId: string, telegramUniqueId: string, botDbId: string, mediaType: 'video' | 'photo', thumbnailFileId?: string) {
+  private queueMediaSave(
+    fileId: string, 
+    telegramUniqueId: string, 
+    botDbId: string, 
+    mediaType: 'video' | 'photo', 
+    thumbnailFileId?: string,
+    fileSize?: string,
+    duration?: number
+  ) {
     // Deduplicate in memory: if uniqueId already queued, skip
     if (!this.pendingVideoBatch.find(v => v.telegramUniqueId === telegramUniqueId)) {
-      this.pendingVideoBatch.push({ fileId, telegramUniqueId, thumbnailFileId, mediaType });
+      this.pendingVideoBatch.push({ fileId, telegramUniqueId, thumbnailFileId, mediaType, fileSize, duration });
     }
     if (!this.batchTimer) {
       this.batchTimer = setTimeout(() => {
@@ -304,6 +314,8 @@ export class CategoryBot {
             category: this.category,
             botId: botDbId,
             mediaType: v.mediaType,
+            fileSize: v.fileSize,
+            duration: v.duration
           })),
           skipDuplicates: true
         });

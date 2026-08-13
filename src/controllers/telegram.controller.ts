@@ -361,12 +361,36 @@ export const deleteJobController = async (req: AuthRequest, res: Response): Prom
       return;
     }
 
+    // Fetch first so we can derive the checkpoint key before deleting
+    const job = await prisma.telegramImportJob.findUnique({ where: { id } });
     await prisma.telegramImportJob.delete({ where: { id } });
 
-    res.json({ success: true, message: 'Job deleted.' });
+    // Clear the checkpoint that belongs to this specific source→target pair
+    if (job) {
+      const checkpointKey = `telegram_last_msg_id_${job.sourceChat.replace(/[@+]/g, '')}_${job.targetBot.replace(/[@+]/g, '')}`;
+      await prisma.setting.deleteMany({ where: { key: checkpointKey } });
+    }
+
+    res.json({ success: true, message: 'Job and its checkpoint deleted.' });
   } catch (error: any) {
     console.error('[telegram.deleteJob]', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to delete job.' });
+  }
+};
+
+/**
+ * Reset all import checkpoints without touching job records.
+ * POST /api/v1/admin/telegram/reset-checkpoints
+ */
+export const resetCheckpointsController = async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { count } = await prisma.setting.deleteMany({
+      where: { key: { startsWith: 'telegram_last_msg_id_' } },
+    });
+    res.json({ success: true, message: `Reset ${count} checkpoint(s). Next import will start from the beginning.`, count });
+  } catch (error: any) {
+    console.error('[telegram.resetCheckpoints]', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to reset checkpoints.' });
   }
 };
 
@@ -377,7 +401,19 @@ export const deleteJobController = async (req: AuthRequest, res: Response): Prom
 export const clearAllJobsController = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { count } = await prisma.telegramImportJob.deleteMany({});
-    res.json({ success: true, message: `Cleared ${count} job(s).`, count });
+
+    // Also wipe all checkpoint settings so the next import truly starts fresh.
+    // These are stored as telegram_last_msg_id_{source}_{target} in the Setting table.
+    const { count: checkpointCount } = await prisma.setting.deleteMany({
+      where: { key: { startsWith: 'telegram_last_msg_id_' } },
+    });
+
+    res.json({
+      success: true,
+      message: `Cleared ${count} job(s) and ${checkpointCount} checkpoint(s).`,
+      count,
+      checkpointCount,
+    });
   } catch (error: any) {
     console.error('[telegram.clearAllJobs]', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to clear jobs.' });
