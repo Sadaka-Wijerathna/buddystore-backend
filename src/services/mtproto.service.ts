@@ -9,9 +9,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 // ─── Stream Piping Constants ──────────────────────────────────────────────────
-// Size of each chunk relayed from download DC to upload DC (Telegram's native part size).
-const STREAM_CHUNK_SIZE = 512 * 1024; // 512 KB
-// 2 videos processed in parallel — balance between speed and stability.
+// Default chunk size, dynamically scaled up for files >2GB inside the pipe loop.
+const DEFAULT_STREAM_CHUNK_SIZE = 512 * 1024; // 512 KB
+// Reduced to 2 videos processed in parallel for Render server limits.
 // Timeout fixes prevent hung senders from blocking the batch.
 const STREAM_PIPE_CONCURRENCY = 2;
 
@@ -43,7 +43,7 @@ const activeClients: Record<string, TelegramClient> = {};
 
 // Cache for listChats dialogs (key: adminId)
 const dialogCache: Record<string, { dialogs: any[]; fetchedAt: number }> = {};
-const DIALOG_CACHE_TTL_MS = 60 * 1000; // Cache for 1 minute
+const DIALOG_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes
 
 // Active import controllers (key: adminId)
 const activeImportControllers: Record<string, { stop: boolean }> = {};
@@ -479,7 +479,12 @@ export async function startImport(
       await updateJobProgress(job.id, adminId, { message: 'Resolving Telegram chat handles...' }, 'Resolving chat handles...');
       
       const sourceEntity = await resolveEntity(client, sourceChat, adminId);
-      const targetEntity = await client.getEntity(targetBot);
+      const safeTargetBot = targetBot.replace(/^@+/, '@');
+      const targetEntity = await client.getEntity(safeTargetBot);
+
+      const botHandle = safeTargetBot.replace(/^@/, '');
+      const targetBotDb = await prisma.bot.findUnique({ where: { name: botHandle } });
+      const targetBotDbId = targetBotDb?.id;
 
       await updateJobProgress(job.id, adminId, { message: 'Fetching video list from source chat...' }, 'Scanning for videos...');
 
@@ -558,9 +563,9 @@ export async function startImport(
           : `Discovered ${totalVideos} videos${lastMsgId ? ` (starting after message ID ${lastMsgId})` : ''}. Starting forwards.`
       );
 
-      // Stream Piping has no file-size cap — we only relay 512 KB at a time regardless of total size.
-      // Keep a conservative disk-fallback cap just in case stream piping fails and we fall back.
-      const DISK_FALLBACK_MAX_BYTES = 200 * 1024 * 1024; // 200 MB (only for fallback path)
+      // Stream Piping dynamically scales chunk size for files > 2GB.
+      // 200MB limit enabled to prevent Render server from crashing out of memory.
+      const DISK_FALLBACK_MAX_BYTES = 200 * 1024 * 1024; // 200 MB
 
       // Start with batch forwarding enabled for unrestricted channels — up to 10x faster.
       // The error handler below switches this to false the moment Telegram rejects with FORWARDS_RESTRICTED.
@@ -715,10 +720,38 @@ export async function startImport(
 
         if (useBatchForward && i < totalVideos) {
           const batch = loadedMessages.slice(localIdx, Math.min(localIdx + batchSize, loadedMessages.length));
-          const batchIds = batch.map((v) => v.id);
+          
+          // ── Deep Duplicate Detection (Batch) ──
+          const validBatch = [];
+          for (const msg of batch) {
+            const doc = (msg.media instanceof Api.MessageMediaDocument && msg.media.document instanceof Api.Document) ? msg.media.document : null;
+            let isDuplicate = false;
+            if (doc && targetBotDbId) {
+              const fileSize = String(doc.size || 0);
+              const durationAttr = doc.attributes?.find(a => a instanceof Api.DocumentAttributeVideo) as Api.DocumentAttributeVideo;
+              const duration = durationAttr ? durationAttr.duration : 0;
+              const existing = await prisma.videos.findFirst({
+                where: { botId: targetBotDbId, fileSize, duration }
+              });
+              if (existing) {
+                isDuplicate = true;
+                await updateJobProgress(job.id, adminId, {}, `[Duplicate] Skipped batch video (Size: ${fileSize}, Duration: ${duration}s) - Already in target bot database.`);
+              }
+            }
+            if (!isDuplicate) validBatch.push(msg);
+          }
 
-          if (batch.length > 0) {
-            const hasRestricted = batch.some((v: any) => v.noforwards);
+          if (validBatch.length === 0 && batch.length > 0) {
+             // All videos in this batch were duplicates
+             i += batch.length - 1;
+             processedBatch = true;
+             continue;
+          }
+
+          const batchIds = validBatch.map((v) => v.id);
+
+          if (validBatch.length > 0) {
+            const hasRestricted = validBatch.some((v: any) => v.noforwards);
 
             if (!hasRestricted) {
               try {
@@ -806,6 +839,24 @@ export async function startImport(
         if (processedBatch) continue;
 
         const msg = loadedMessages[localIdx];
+
+        // ── Deep Duplicate Detection (Single/Restricted) ──
+        const doc = (msg.media instanceof Api.MessageMediaDocument && msg.media.document instanceof Api.Document) ? msg.media.document : null;
+        let isDuplicate = false;
+        if (doc && targetBotDbId) {
+          const fileSize = String(doc.size || 0);
+          const durationAttr = doc.attributes?.find(a => a instanceof Api.DocumentAttributeVideo) as Api.DocumentAttributeVideo;
+          const duration = durationAttr ? durationAttr.duration : 0;
+          const existing = await prisma.videos.findFirst({
+            where: { botId: targetBotDbId, fileSize, duration }
+          });
+          if (existing) {
+            isDuplicate = true;
+            await updateJobProgress(job.id, adminId, { progress: i + 1 }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
+          }
+        }
+        
+        if (isDuplicate) continue;
 
         try {
           let forwarded = false;
@@ -1019,7 +1070,7 @@ async function streamPipeVideo(
    */
   uploadMutex?: AsyncMutex
 ): Promise<void> {
-  const doc = (
+  let doc = (
     msg.media instanceof Api.MessageMediaDocument &&
     msg.media.document instanceof Api.Document
   )
@@ -1029,7 +1080,16 @@ async function streamPipeVideo(
   if (!doc) throw new Error(`Message ${msg.id} has no document`);
 
   const totalBytes = Number(doc.size);
-  const totalParts = Math.ceil(totalBytes / STREAM_CHUNK_SIZE);
+  // Dynamic chunk sizing for massive files > 1.95 GB to avoid hitting the 3999 parts limit
+  let chunkSize = DEFAULT_STREAM_CHUNK_SIZE;
+  if (totalBytes > 1.95 * 1024 * 1024 * 1024) {
+    chunkSize = 1024 * 1024; // 1MB
+  }
+  if (totalBytes > 3.9 * 1024 * 1024 * 1024) {
+    chunkSize = 2 * 1024 * 1024; // 2MB
+  }
+
+  const totalParts = Math.ceil(totalBytes / chunkSize);
   // Random 64-bit file ID for the upload session (Telegram requires this).
   // Cast to `any` to bridge native bigint vs GramJS's BigInteger type.
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -1037,7 +1097,7 @@ async function streamPipeVideo(
   const fileId: any = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
 
   // Build the input location needed by GetFile
-  const inputLocation = new Api.InputDocumentFileLocation({
+  let inputLocation = new Api.InputDocumentFileLocation({
     id: doc.id,
     accessHash: doc.accessHash,
     fileReference: doc.fileReference,
@@ -1045,10 +1105,6 @@ async function streamPipeVideo(
   });
 
   // ── Connect to the file's DC (with retry) ────────────────────────────────
-  // _borrowExportedSender can fail with "Not connected" on the first attempt
-  // while GramJS is establishing the TCP connection to the foreign DC.
-  // Retrying with backoff lets GramJS finish connecting instead of
-  // immediately falling back to the disk method.
   const SENDER_MAX_RETRIES = 3;
   let sender: any;
   for (let senderAttempt = 0; senderAttempt <= SENDER_MAX_RETRIES; senderAttempt++) {
@@ -1069,26 +1125,23 @@ async function streamPipeVideo(
     }
   }
 
-  // Retry config for transient errors on GetFile.
   const GET_FILE_MAX_RETRIES = 3;
   const GET_FILE_RETRY_BASE_MS = 2000;
 
-  for (let part = 0; part < totalParts; part++) {
+  // Helper to fetch a chunk with Auto-Refresh for FILE_REFERENCE_EXPIRED
+  const fetchChunk = async (partIndex: number): Promise<Buffer> => {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — GramJS BigInteger vs native bigint
-    const offset: any = BigInt(part) * BigInt(STREAM_CHUNK_SIZE);
-
-    // Download this chunk from the correct DC — retry on transient timeouts
-    // Each individual GetFile call is capped at 30s; hung senders must not block forever.
+    // @ts-ignore
+    const offset: any = BigInt(partIndex) * BigInt(chunkSize);
     const GET_FILE_CHUNK_TIMEOUT_MS = 30_000;
-    let chunkBytes: Buffer | null = null;
+
     for (let attempt = 0; attempt <= GET_FILE_MAX_RETRIES; attempt++) {
       try {
         const chunkPromise = sender.send(
           new Api.upload.GetFile({
             location: inputLocation,
             offset,
-            limit: STREAM_CHUNK_SIZE,
+            limit: chunkSize,
             precise: true,
           })
         );
@@ -1096,42 +1149,79 @@ async function streamPipeVideo(
           setTimeout(() => reject(new Error('GetFile chunk timeout after 30s')), GET_FILE_CHUNK_TIMEOUT_MS)
         );
         const result = await Promise.race([chunkPromise, timeoutPromise]) as any;
-        chunkBytes = result.bytes;
-        break; // success — exit retry loop
+        return result.bytes;
       } catch (getFileErr: any) {
+        const errMsg = getFileErr?.message || '';
+        
+        // ── Auto-Refresh FILE_REFERENCE_EXPIRED ──
+        if (errMsg.includes('FILE_REFERENCE_EXPIRED') || errMsg.includes('FILE_REFERENCE_EMPTY')) {
+          console.log(`[StreamPipe] File reference expired at part ${partIndex}. Refreshing from source...`);
+          try {
+            const refreshed = await client.getMessages(sourceEntity, { ids: [msg.id] });
+            if (refreshed && refreshed[0]) {
+              const freshMsg = refreshed[0];
+              const freshDoc = (freshMsg.media instanceof Api.MessageMediaDocument && freshMsg.media.document instanceof Api.Document)
+                ? freshMsg.media.document : null;
+              if (freshDoc) {
+                doc = freshDoc;
+                inputLocation = new Api.InputDocumentFileLocation({
+                  id: doc.id,
+                  accessHash: doc.accessHash,
+                  fileReference: doc.fileReference,
+                  thumbSize: '',
+                });
+                continue; // Retry fetch with fresh file reference
+              }
+            }
+          } catch (refreshErr) {
+            console.error('Failed to refresh file reference', refreshErr);
+          }
+          throw new Error('Failed to refresh expired file reference during stream pipe.');
+        }
+
         const isRetryable =
-          getFileErr?.message?.includes('-503') ||
+          errMsg.includes('-503') ||
           getFileErr?.errorCode === -503 ||
-          getFileErr?.message?.includes('Timeout') ||
-          getFileErr?.message?.includes('timeout') ||
-          getFileErr?.message?.includes('Not connected') ||
-          getFileErr?.message?.includes('disconnected') ||
-          getFileErr?.message?.includes('ECONNRESET');
+          errMsg.includes('Timeout') ||
+          errMsg.includes('timeout') ||
+          errMsg.includes('Not connected') ||
+          errMsg.includes('disconnected') ||
+          errMsg.includes('ECONNRESET');
+          
         if (isRetryable && attempt < GET_FILE_MAX_RETRIES) {
-          // Re-borrow sender in case it went into a hung state
-          try { sender = await (client as any)._borrowExportedSender(doc.dcId); } catch (_) {}
-          // Exponential backoff: 2s, 4s, 6s
+          try { if (doc) { sender = await (client as any)._borrowExportedSender(doc.dcId); } } catch (_) {}
           await new Promise((r) => setTimeout(r, GET_FILE_RETRY_BASE_MS * (attempt + 1)));
           continue;
         }
-        throw getFileErr; // non-timeout error or retries exhausted
+        throw getFileErr;
       }
     }
+    throw new Error(`Failed to fetch part ${partIndex} after retries`);
+  };
 
+  // ── Asynchronous Pipelining (Read-Ahead Buffer) ──
+  // We start downloading the next chunk while the current one is uploading.
+  let nextChunkPromise = totalParts > 0 ? fetchChunk(0) : Promise.resolve(Buffer.alloc(0));
+
+  for (let part = 0; part < totalParts; part++) {
+    const chunkBytes = await nextChunkPromise;
     if (!chunkBytes || chunkBytes.length === 0) {
       throw new Error(`Empty chunk received at part ${part} for message ${msg.id}`);
     }
 
-    // Upload this chunk via the main client — serialized through the shared mutex
-    // so only ONE SaveBigFilePart is in flight at a time, preventing main sender
-    // "hanging states" that cause grammy webhook timeouts.
+    // Read-ahead: Fetch next chunk immediately while uploading this one
+    if (part + 1 < totalParts) {
+      nextChunkPromise = fetchChunk(part + 1);
+    }
+
+    // Upload this chunk via the main client
     const doUpload = () =>
       client.invoke(
         new Api.upload.SaveBigFilePart({
           fileId,
           filePart: part,
           fileTotalParts: totalParts,
-          bytes: chunkBytes!,
+          bytes: chunkBytes,
         })
       );
 
@@ -1158,7 +1248,7 @@ async function streamPipeVideo(
     caption: msg.message || '',
     forceDocument: false,
     attributes: filenameAttr ? attrs : [...attrs, new Api.DocumentAttributeFilename({ fileName: filename })],
-    workers: 1, // Already parallelised at the batch level; keep per-pipe workers low
+    workers: 1, // Reduced workers for final assembly/sending to prevent OOM on Render
   });
 }
 
@@ -1302,7 +1392,9 @@ export async function listChats(adminId: string) {
   if (dialogCache[adminId] && (now - dialogCache[adminId].fetchedAt < DIALOG_CACHE_TTL_MS)) {
     dialogs = dialogCache[adminId].dialogs;
   } else {
-    dialogs = await client.getDialogs({ limit: 300 });
+    // Limit to 100 to keep response times under control.
+    // Accounts with hundreds of chats can take 30+ seconds for larger limits.
+    dialogs = await client.getDialogs({ limit: 100 });
     dialogCache[adminId] = { dialogs, fetchedAt: now };
   }
   const chats = dialogs
