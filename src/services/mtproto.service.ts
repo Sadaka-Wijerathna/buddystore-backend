@@ -271,6 +271,7 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
   const tryConnect = async (retries = 2): Promise<TelegramClient | null> => {
     const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
       connectionRetries: 5,
+      useWSS: true,
       baseLogger: new Logger('warn' as any),
     });
 
@@ -374,6 +375,7 @@ export async function sendCode(adminId: string, phoneNumber: string) {
 
   const client = new TelegramClient(new StringSession(''), apiId, apiHash, {
     connectionRetries: 5,
+    useWSS: true,
     baseLogger: new Logger('warn' as any),
   });
 
