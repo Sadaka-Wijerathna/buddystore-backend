@@ -468,69 +468,16 @@ export class CategoryBot {
       return false;
     };
 
-    // ── Helper: send a media group — NO retry on unknown errors ──────────────
-    // IMPORTANT: Retrying a group send is UNSAFE. sendMediaGroup may have
-    // already delivered the videos to the user but returned a network error
-    // (timeout, etc.) to our server. Retrying would re-send the same album.
-    // Strategy:
-    //   - 429 (rate limit): Telegram did NOT process the request → safe to retry
-    //   - Unrecoverable: throw immediately to abort delivery
-    //   - Anything else: return false → let the top-up loop compensate with
-    //     individual trySendSingle calls (which are safer to retry per-video)
-    const trySendGroup = async (chunk: { fileId: string }[]): Promise<boolean> => {
-      try {
-        if (!this.bot) throw new Error(`${this.name} has no token configured`);
-        const mediaGroup = chunk.map(v => ({ type: 'video', media: v.fileId }));
-        await this.bot.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
-          protect_content: true,
-          disable_notification: true,
-        });
-        return true;
-      } catch (error: any) {
-        const description: string = error?.description ?? '';
-        const errorCode: number = error?.error_code ?? 0;
-
-        if (isUnrecoverable(description)) {
-          try {
-            await this.bot?.api.sendMessage(
-              userTelegramId.toString(),
-              `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
-              { parse_mode: 'Markdown' }
-            );
-          } catch (_) { /* ignore if we can't reach the user */ }
-          throw new Error(
-            `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
-            `The user likely never started the bot (@${this.name}).`
-          );
-        }
-
-        if (errorCode === 429) {
-          // 429 = rate limited: Telegram did NOT process the request, safe to wait + retry once
-          const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
-          console.warn(`[${this.name}] Rate limited (429) on group send. Waiting ${retryAfterSec}s then retrying once...`);
-          await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
-          try {
-            const mediaGroup = chunk.map(v => ({ type: 'video', media: v.fileId }));
-            await this.bot!.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
-              protect_content: true,
-              disable_notification: true,
-            });
-            return true;
-          } catch (retryErr: any) {
-            console.warn(`[${this.name}] Group send failed after 429 retry: ${retryErr?.description ?? retryErr}`);
-            return false;
-          }
-        }
-
-        // Unknown/transient error — do NOT retry (may already have been delivered)
-        // The top-up loop will compensate with individual video sends.
-        console.warn(`[${this.name}] Group send failed (no retry — may cause duplicates): ${description || error}`);
-        return false;
-      }
-    };
-
     // ── Main delivery loop ────────────────────────────────────────────────────
-    // Get videos that haven't been sent to this user yet
+    // NOTE: We always send videos ONE BY ONE using sendVideo, never sendMediaGroup.
+    //
+    // Reason: sendMediaGroup cannot be safely retried.
+    // If Telegram delivers the album but returns a network error to our server,
+    // retrying re-sends the same 10 videos = duplicates. sendVideo for a single
+    // video is atomic — if it throws, Telegram did NOT deliver it, so retrying
+    // is always safe and delivery tracking stays accurate.
+    //
+    // Get videos that haven't been sent to this user yet for this order
     const videos = await prisma.videos.findMany({
       where: {
         category: this.category,
@@ -549,59 +496,37 @@ export class CategoryBot {
     // Track IDs of every video we've attempted (for top-up exclusion)
     const attemptedVideoIds = new Set<string>(videos.map(v => v.id));
 
-    const useGroups = videos.length > 5;
-    const chunkSize = useGroups ? 10 : 1;
-
-    for (let i = 0; i < videos.length; i += chunkSize) {
-      const chunk = videos.slice(i, i + chunkSize);
-
-      // ── Idempotency guard ─────────────────────────────────────────────────
-      // Before sending, check which videos in this chunk were already delivered
-      // for this order. This prevents duplicate delivery when the retry loop
-      // fires after a successful Telegram send that returned an error response.
-      const existingDeliveries = await prisma.videoDelivery.findMany({
-        where: { orderId, videoId: { in: chunk.map(v => v.id) } },
-        select: { videoId: true },
+    for (const video of videos) {
+      // ── Idempotency guard: skip if already delivered for this order ────────
+      // Protects against re-delivery if processJob is called twice for the
+      // same order (e.g. after a server restart or manual admin re-trigger).
+      const alreadyDelivered = await prisma.videoDelivery.findFirst({
+        where: { orderId, videoId: video.id },
+        select: { id: true },
       });
-      const alreadySentIds = new Set(existingDeliveries.map(d => d.videoId));
-
-      // Count already-delivered videos so progress stays accurate
-      if (alreadySentIds.size > 0) {
-        sent += alreadySentIds.size;
+      if (alreadyDelivered) {
+        sent++;
         onProgress(sent, count);
-      }
-
-      const toSend = chunk.filter(v => !alreadySentIds.has(v.id));
-      if (toSend.length === 0) {
-        // Entire chunk already delivered (e.g. from a previous retry) — skip Telegram call
-        console.log(`[${this.name}] Chunk at index ${i} already delivered — skipping`);
-        await new Promise((r) => setTimeout(r, 200));
         continue;
       }
       // ─────────────────────────────────────────────────────────────────────
 
-      let success = false;
-      if (toSend.length === 1) {
-        success = await trySendSingle(toSend[0].fileId);
-      } else {
-        success = await trySendGroup(toSend);
-      }
+      const success = await trySendSingle(video.fileId);
 
       if (success) {
         await prisma.videoDelivery.createMany({
-          data: toSend.map(v => ({ orderId, videoId: v.id, userId })),
+          data: [{ orderId, videoId: video.id, userId }],
           skipDuplicates: true,
         });
-        sent += toSend.length;
+        sent++;
         onProgress(sent, count);
       } else {
-        console.error(`[${this.name}] Skipping chunk at index ${i} after 3 failed attempts`);
+        console.error(`[${this.name}] Failed to send video ${video.id} for order ${orderId} after 3 attempts`);
       }
 
       // Acquire a global rate token (shared across all bots, max 20/sec total outgoing)
       await acquireRateToken();
-      // Per-chat limit: also wait before next chunk
-      await new Promise((r) => setTimeout(r, useGroups ? 1500 : 1000));
+      await new Promise((r) => setTimeout(r, 1000));
     }
 
     // ── Top-up loop: compensate for failed sends ──────────────────────────────

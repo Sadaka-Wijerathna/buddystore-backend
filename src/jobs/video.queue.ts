@@ -25,6 +25,28 @@ export interface VideoDeliveryJobData {
 // Backward-compat alias for the admin controller
 export const videoDeliveryQueue = {
   add: async (jobName: string, data: VideoDeliveryJobData, opts?: any) => {
+    // ── Duplicate job guard ───────────────────────────────────────────────────
+    // Prevent creating a second delivery job while one is already PENDING or
+    // PROCESSING for the same order. This stops double-delivery when a failed
+    // job resets the order to CONFIRMED and the admin re-triggers delivery,
+    // or when two code paths both try to queue the same order simultaneously.
+    const existingActiveJob = await prisma.videoDeliveryJob.findFirst({
+      where: {
+        orderId: data.orderId,
+        status: { in: ['PENDING', 'PROCESSING'] },
+      },
+      select: { id: true, status: true },
+    });
+
+    if (existingActiveJob) {
+      console.warn(
+        `[Queue] Skipping duplicate job for order ${data.orderId} — ` +
+        `an active job already exists (id=${existingActiveJob.id}, status=${existingActiveJob.status})`
+      );
+      return { id: existingActiveJob.id };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     console.log(`[Queue] Adding job to postgres queue for order: ${data.orderId}`);
     await prisma.videoDeliveryJob.create({
       data: {
