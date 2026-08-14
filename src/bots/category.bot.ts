@@ -537,19 +537,44 @@ export class CategoryBot {
     for (let i = 0; i < videos.length; i += chunkSize) {
       const chunk = videos.slice(i, i + chunkSize);
 
+      // ── Idempotency guard ─────────────────────────────────────────────────
+      // Before sending, check which videos in this chunk were already delivered
+      // for this order. This prevents duplicate delivery when the retry loop
+      // fires after a successful Telegram send that returned an error response.
+      const existingDeliveries = await prisma.videoDelivery.findMany({
+        where: { orderId, videoId: { in: chunk.map(v => v.id) } },
+        select: { videoId: true },
+      });
+      const alreadySentIds = new Set(existingDeliveries.map(d => d.videoId));
+
+      // Count already-delivered videos so progress stays accurate
+      if (alreadySentIds.size > 0) {
+        sent += alreadySentIds.size;
+        onProgress(sent, count);
+      }
+
+      const toSend = chunk.filter(v => !alreadySentIds.has(v.id));
+      if (toSend.length === 0) {
+        // Entire chunk already delivered (e.g. from a previous retry) — skip Telegram call
+        console.log(`[${this.name}] Chunk at index ${i} already delivered — skipping`);
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       let success = false;
-      if (chunk.length === 1) {
-        success = await trySendSingle(chunk[0].fileId);
+      if (toSend.length === 1) {
+        success = await trySendSingle(toSend[0].fileId);
       } else {
-        success = await trySendGroup(chunk);
+        success = await trySendGroup(toSend);
       }
 
       if (success) {
         await prisma.videoDelivery.createMany({
-          data: chunk.map(v => ({ orderId, videoId: v.id, userId })),
+          data: toSend.map(v => ({ orderId, videoId: v.id, userId })),
           skipDuplicates: true,
         });
-        sent += chunk.length;
+        sent += toSend.length;
         onProgress(sent, count);
       } else {
         console.error(`[${this.name}] Skipping chunk at index ${i} after 3 failed attempts`);
@@ -593,6 +618,18 @@ export class CategoryBot {
       // Top-up sends are always single-video to maximise success rate
       for (const video of extraVideos) {
         if (sent >= count) break;
+
+        // Idempotency guard: skip if this video was already delivered (retry safety)
+        const alreadyDelivered = await prisma.videoDelivery.findFirst({
+          where: { orderId, videoId: video.id },
+          select: { id: true },
+        });
+        if (alreadyDelivered) {
+          console.log(`[${this.name}] Top-up: video ${video.id} already delivered — skipping`);
+          sent++;
+          onProgress(sent, count);
+          continue;
+        }
 
         const success = await trySendSingle(video.fileId);
 
