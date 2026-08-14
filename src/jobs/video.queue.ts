@@ -61,6 +61,13 @@ async function processJob(jobId: string) {
   const pendingJob = await prisma.videoDeliveryJob.findUnique({ where: { id: jobId } });
   if (!pendingJob) return;
 
+  // Guard: if somehow this job is no longer PROCESSING (e.g. claimed by another
+  // worker instance after a restart), bail out to prevent double-delivery.
+  if (pendingJob.status !== 'PROCESSING') {
+    console.warn(`[Job] Job ${jobId} has status '${pendingJob.status}' — expected PROCESSING. Skipping to prevent duplicate delivery.`);
+    return;
+  }
+
   const { orderId, userId, userTelegramId, category, videoCount } = pendingJob;
   console.log(`[Job] Starting video delivery for order ${orderId} (Job ${jobId}) — active: ${activeJobCount}/${MAX_CONCURRENT_JOBS}`);
 
