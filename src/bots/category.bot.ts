@@ -468,47 +468,65 @@ export class CategoryBot {
       return false;
     };
 
-    // ── Helper: send a media group with up to 3 retries ──────────────────────
+    // ── Helper: send a media group — NO retry on unknown errors ──────────────
+    // IMPORTANT: Retrying a group send is UNSAFE. sendMediaGroup may have
+    // already delivered the videos to the user but returned a network error
+    // (timeout, etc.) to our server. Retrying would re-send the same album.
+    // Strategy:
+    //   - 429 (rate limit): Telegram did NOT process the request → safe to retry
+    //   - Unrecoverable: throw immediately to abort delivery
+    //   - Anything else: return false → let the top-up loop compensate with
+    //     individual trySendSingle calls (which are safer to retry per-video)
     const trySendGroup = async (chunk: { fileId: string }[]): Promise<boolean> => {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          if (!this.bot) throw new Error(`${this.name} has no token configured`);
-          const mediaGroup = chunk.map(v => ({ type: 'video', media: v.fileId }));
-          await this.bot.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
-            protect_content: true,
-            disable_notification: true,
-          });
-          return true;
-        } catch (error: any) {
-          const description: string = error?.description ?? '';
-          const errorCode: number = error?.error_code ?? 0;
+      try {
+        if (!this.bot) throw new Error(`${this.name} has no token configured`);
+        const mediaGroup = chunk.map(v => ({ type: 'video', media: v.fileId }));
+        await this.bot.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
+          protect_content: true,
+          disable_notification: true,
+        });
+        return true;
+      } catch (error: any) {
+        const description: string = error?.description ?? '';
+        const errorCode: number = error?.error_code ?? 0;
 
-          if (isUnrecoverable(description)) {
-            try {
-              await this.bot?.api.sendMessage(
-                userTelegramId.toString(),
-                `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
-                { parse_mode: 'Markdown' }
-              );
-            } catch (_) { /* ignore if we can't reach the user */ }
-            throw new Error(
-              `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
-              `The user likely never started the bot (@${this.name}).`
+        if (isUnrecoverable(description)) {
+          try {
+            await this.bot?.api.sendMessage(
+              userTelegramId.toString(),
+              `⚠️ *Order Delivery Failed*\n\nWe couldn't deliver your videos because: _${description}_\n\nPlease contact support and mention your Order ID.`,
+              { parse_mode: 'Markdown' }
             );
-          }
-
-          if (errorCode === 429) {
-            const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
-            console.warn(`[${this.name}] Rate limited (429). Waiting ${retryAfterSec}s before retry...`);
-            await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
-            continue;
-          }
-
-          console.warn(`[${this.name}] Attempt ${attempt}/3 failed for group: ${description}`);
-          if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+          } catch (_) { /* ignore if we can't reach the user */ }
+          throw new Error(
+            `Cannot deliver to Telegram user ${userTelegramId}: ${description}. ` +
+            `The user likely never started the bot (@${this.name}).`
+          );
         }
+
+        if (errorCode === 429) {
+          // 429 = rate limited: Telegram did NOT process the request, safe to wait + retry once
+          const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
+          console.warn(`[${this.name}] Rate limited (429) on group send. Waiting ${retryAfterSec}s then retrying once...`);
+          await new Promise((r) => setTimeout(r, retryAfterSec * 1000));
+          try {
+            const mediaGroup = chunk.map(v => ({ type: 'video', media: v.fileId }));
+            await this.bot!.api.sendMediaGroup(userTelegramId.toString(), mediaGroup as any, {
+              protect_content: true,
+              disable_notification: true,
+            });
+            return true;
+          } catch (retryErr: any) {
+            console.warn(`[${this.name}] Group send failed after 429 retry: ${retryErr?.description ?? retryErr}`);
+            return false;
+          }
+        }
+
+        // Unknown/transient error — do NOT retry (may already have been delivered)
+        // The top-up loop will compensate with individual video sends.
+        console.warn(`[${this.name}] Group send failed (no retry — may cause duplicates): ${description || error}`);
+        return false;
       }
-      return false;
     };
 
     // ── Main delivery loop ────────────────────────────────────────────────────
