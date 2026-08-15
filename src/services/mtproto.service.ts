@@ -1395,10 +1395,47 @@ async function streamPipeVideo(
     name: filename,
   });
 
+  // ── Download original thumbnail to avoid black preview on re-uploaded videos ──
+  // Stream pipe re-uploads raw bytes without the thumbnail, so we fetch it
+  // from Telegram and pass it explicitly to sendFile.
+  let thumbBuffer: Buffer | undefined;
+  try {
+    const photoThumbs = (doc.thumbs || []).filter(
+      (t: any) => t instanceof Api.PhotoSize || t instanceof Api.PhotoCachedSize
+    ) as (Api.PhotoSize | Api.PhotoCachedSize)[];
+    if (photoThumbs.length > 0) {
+      // Pick the largest available thumbnail
+      const bestThumb = photoThumbs.reduce((best: any, curr: any) =>
+        ((curr.w || 0) * (curr.h || 0)) > ((best.w || 0) * (best.h || 0)) ? curr : best
+      );
+      const thumbLocation = new Api.InputDocumentFileLocation({
+        id: doc.id,
+        accessHash: doc.accessHash,
+        fileReference: doc.fileReference,
+        thumbSize: bestThumb.type,
+      });
+      const thumbResult = await client.invoke(
+        new Api.upload.GetFile({
+          location: thumbLocation,
+          // @ts-ignore — BigInt vs GramJS BigInteger
+          offset: BigInt(0) as any,
+          limit: 512 * 1024,
+          precise: false,
+        })
+      ) as any;
+      if (thumbResult?.bytes?.length > 0) {
+        thumbBuffer = Buffer.from(thumbResult.bytes);
+      }
+    }
+  } catch (_thumbErr) {
+    // Thumbnail is optional — proceed without it
+  }
+
   await client.sendFile(targetEntity, {
     file: inputFileBig,
     caption: msg.message || '',
     forceDocument: false,
+    thumb: thumbBuffer,
     attributes: filenameAttr ? attrs : [...attrs, new Api.DocumentAttributeFilename({ fileName: filename })],
     workers: 1, // Reduced workers for final assembly/sending to prevent OOM on Render
   });
@@ -1462,10 +1499,44 @@ async function diskDownloadAndUpload(
       ? freshAttrs
       : [...freshAttrs, new Api.DocumentAttributeFilename({ fileName: freshFilename })];
 
+    // ── Download original thumbnail (disk fallback path) ──────────────────────
+    let diskThumbBuffer: Buffer | undefined;
+    try {
+      const photoThumbs = (freshDoc?.thumbs || []).filter(
+        (t: any) => t instanceof Api.PhotoSize || t instanceof Api.PhotoCachedSize
+      ) as (Api.PhotoSize | Api.PhotoCachedSize)[];
+      if (photoThumbs.length > 0 && freshDoc) {
+        const bestThumb = photoThumbs.reduce((best: any, curr: any) =>
+          ((curr.w || 0) * (curr.h || 0)) > ((best.w || 0) * (best.h || 0)) ? curr : best
+        );
+        const thumbLocation = new Api.InputDocumentFileLocation({
+          id: freshDoc.id,
+          accessHash: freshDoc.accessHash,
+          fileReference: freshDoc.fileReference,
+          thumbSize: bestThumb.type,
+        });
+        const thumbResult = await client.invoke(
+          new Api.upload.GetFile({
+            location: thumbLocation,
+            // @ts-ignore — BigInt vs GramJS BigInteger
+            offset: BigInt(0) as any,
+            limit: 512 * 1024,
+            precise: false,
+          })
+        ) as any;
+        if (thumbResult?.bytes?.length > 0) {
+          diskThumbBuffer = Buffer.from(thumbResult.bytes);
+        }
+      }
+    } catch (_thumbErr) {
+      // Thumbnail is optional
+    }
+
     await client.sendFile(targetEntity, {
       file: tmpPath,
       caption: currentMsg.message || '',
       forceDocument: false,
+      thumb: diskThumbBuffer,
       attributes,
       workers: 4,
     });
