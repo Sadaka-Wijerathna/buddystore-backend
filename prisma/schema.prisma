@@ -68,6 +68,7 @@ model BankAccount {
   accountName   String
   accountNumber String
   branch        String?
+  logo          String?
   isActive      Boolean  @default(true)
   order         Int      @default(0)
   createdAt     DateTime @default(now())
@@ -138,6 +139,7 @@ model Bot {
   minVideoCount  Int      @default(10)
   pricePerVideo  Float    @default(5)
   bannerUrl      String? // Cloudinary URL for the category preview
+  showPreviews   Boolean  @default(true)
   startedUserIds String[] @default([]) // Telegram user IDs that started this bot
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

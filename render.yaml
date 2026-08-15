@@ -12,7 +12,7 @@ services:
       - key: NODE_ENV
         value: "production"
       - key: FRONTEND_URL
-        value: "https://buddystore.vercel.app"
+        value: "https://tgbuddy.store"
       - key: UPLOAD_DIR
         value: "uploads"
       - key: PUBLIC_CHANNEL_ID

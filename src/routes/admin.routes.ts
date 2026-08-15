@@ -69,8 +69,9 @@ router.put('/settings', requireSuperAdmin, adminController.adminUpdateSettings);
 
 // Bank Accounts
 router.get('/bank-accounts', adminController.adminGetBankAccounts);
-router.post('/bank-accounts', requireSuperAdmin, adminController.adminCreateBankAccount);
-router.patch('/bank-accounts/:id', requireSuperAdmin, adminController.adminUpdateBankAccount);
+router.post('/bank-accounts', requireSuperAdmin, upload.single('logo'), adminController.adminCreateBankAccount);
+router.patch('/bank-accounts/reorder', requireSuperAdmin, adminController.adminReorderBankAccounts);
+router.patch('/bank-accounts/:id', requireSuperAdmin, upload.single('logo'), adminController.adminUpdateBankAccount);
 router.delete('/bank-accounts/:id', requireSuperAdmin, adminController.adminDeleteBankAccount);
 
 // Affiliates
