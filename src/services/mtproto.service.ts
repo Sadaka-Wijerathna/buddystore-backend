@@ -685,9 +685,10 @@ export async function startImport(
         return;
       }
 
-      // Bug 2 Fix: If skipExistingCheck=true, the message scan only has the remaining ones, so start index is 0.
-      // Otherwise start index is job.progress.
-      const startIndex = (resumeJobId && skipExistingCheck) ? 0 : (resumeJobId ? job.progress : 0);
+      // On resume, always start the processing loop from job.progress so we skip
+      // already-transferred videos. skipExisting only controls duplicate detection
+      // within the scan, not the loop counter.
+      const startIndex = resumeJobId ? job.progress : 0;
 
       await updateJobProgress(
         job.id,
