@@ -282,7 +282,7 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
 
   const { apiId, apiHash } = await getApiCredentials();
 
-  const tryConnect = async (retries = 2): Promise<TelegramClient | null> => {
+  const tryConnect = async (retries = 5): Promise<TelegramClient | null> => {
     const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
       connectionRetries: 5,
       useWSS: true,
@@ -303,10 +303,11 @@ export async function getConnectedClient(adminId: string): Promise<TelegramClien
       try { await client.disconnect(); } catch (_) {}
 
       // Telegram keeps the old key alive briefly after a process restart.
-      // Wait 3 s and retry — the conflict clears itself quickly.
+      // Wait 5 s and retry — the conflict clears itself quickly.
+      // Render redeploys fast, so we give up to 5 retries (25s total).
       if (err?.errorMessage === 'AUTH_KEY_DUPLICATED' && retries > 0) {
-        console.warn(`[mtproto] AUTH_KEY_DUPLICATED for admin ${adminId}, retrying in 3 s... (${retries} left)`);
-        await new Promise(r => setTimeout(r, 3000));
+        console.warn(`[mtproto] AUTH_KEY_DUPLICATED for admin ${adminId}, retrying in 5 s... (${retries} left)`);
+        await new Promise(r => setTimeout(r, 5000));
         return tryConnect(retries - 1);
       }
 
