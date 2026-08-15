@@ -59,7 +59,7 @@ mainBot.use(async (ctx, next) => {
 
   // If no token in start payload, just greet
   if (!payload) {
-    const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
     await ctx.reply(
       `👋 Welcome to BuddyStore!\n\nUse our website to register your account at ${frontendUrl}/register`
     );
@@ -135,7 +135,66 @@ mainBot.use(async (ctx, next) => {
   );
 });
 
-// Handle messages from already-registered users
+// ─── /help Command ────────────────────────────────────────────────────────────
+mainBot.command('help', async (ctx: Context) => {
+  const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
+
+  const helpMessage = `
+🛍️ *Welcome to BuddyStore!*
+_Your #1 Telegram video store_
+
+━━━━━━━━━━━━━━━━━━━━
+🔐 *How to Get Started*
+━━━━━━━━━━━━━━━━━━━━
+1️⃣ Go to [tgbuddy.store](${frontendUrl}/register)
+2️⃣ Enter your *Telegram username*
+3️⃣ Click the verification link sent here
+4️⃣ Set your password — you're in! ✅
+
+━━━━━━━━━━━━━━━━━━━━
+🎬 *How to Buy Videos*
+━━━━━━━━━━━━━━━━━━━━
+• Browse our video categories on the website
+• Add packs to your cart 🛒
+• Choose your payment method and checkout
+• Videos are delivered *directly in this chat* 📩
+
+━━━━━━━━━━━━━━━━━━━━
+💳 *Payment Methods*
+━━━━━━━━━━━━━━━━━━━━
+⭐ *Telegram Stars* — Instant, no hassle
+💰 *Crypto* — USDT & more accepted
+🏦 *Bank Transfer* — Manual verification
+
+━━━━━━━━━━━━━━━━━━━━
+📦 *Video Delivery*
+━━━━━━━━━━━━━━━━━━━━
+• After payment is confirmed, videos are sent here automatically
+• Delivery starts within seconds of order confirmation
+• Each video pack contains the exact count you purchased
+
+━━━━━━━━━━━━━━━━━━━━
+📊 *Manage Your Account*
+━━━━━━━━━━━━━━━━━━━━
+• View orders & history → [Dashboard](${frontendUrl}/dashboard)
+• Check your balance & top up → [Wallet](${frontendUrl}/dashboard/wallet)
+• Browse all categories → [Shop](${frontendUrl})
+
+━━━━━━━━━━━━━━━━━━━━
+🆘 *Need Help?*
+━━━━━━━━━━━━━━━━━━━━
+Contact our support or visit the website for more info.
+
+🌐 [tgbuddy.store](${frontendUrl})
+`.trim();
+
+  await ctx.reply(helpMessage, {
+    parse_mode: 'Markdown',
+    link_preview_options: { is_disabled: true },
+  });
+});
+
+
 mainBot.on('message', async (ctx: Context) => {
   const from = ctx.from;
   if (!from) return;
@@ -144,7 +203,7 @@ mainBot.on('message', async (ctx: Context) => {
     where: { telegramId: BigInt(from.id) },
   });
 
-  const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
+  const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
   if (user) {
     await ctx.reply(`👋 Hi ${user.firstName}! Visit ${frontendUrl}/dashboard to manage your account.`);
   } else {
