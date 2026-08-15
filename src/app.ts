@@ -30,7 +30,7 @@ app.disable('x-powered-by');
 app.use(helmet());
 
 // Support comma-separated list of allowed origins in FRONTEND_URL
-// Example: FRONTEND_URL=https://buddystore.vercel.app,http://localhost:3000
+// Example: FRONTEND_URL=https://tgbuddy.store,http://localhost:3000
 const allowedOrigins = config.frontendUrl
   .split(',')
   .map((o) => o.trim())

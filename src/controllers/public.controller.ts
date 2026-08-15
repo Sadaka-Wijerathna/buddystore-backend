@@ -40,16 +40,20 @@ export const getVideoGallery = async (req: Request, res: Response): Promise<void
     });
 
     // Build a label map from the bots table so custom categories get the right display name
-    const allBots = await prisma.bot.findMany({ select: { category: true, label: true, bannerUrl: true } });
+    const allBots = await prisma.bot.findMany({ select: { category: true, label: true, bannerUrl: true, showPreviews: true } });
     const labelMap: Record<string, string> = {};
     const bannerMap: Record<string, string | null> = {};
+    const previewAccessMap: Record<string, boolean> = {};
     allBots.forEach(b => {
       labelMap[b.category] = b.label || b.category;
       bannerMap[b.category] = b.bannerUrl;
+      previewAccessMap[b.category] = b.showPreviews;
     });
 
     const data = await Promise.all(
       categoriesWithThumbnails.map(async (group) => {
+        if (!previewAccessMap[group.category]) return null;
+
         const [totalVideos, totalWithThumbnail] = await Promise.all([
           prisma.videos.count({ where: { category: group.category } }),
           prisma.videos.count({ where: { category: group.category, thumbnailUrl: { not: null } } }),

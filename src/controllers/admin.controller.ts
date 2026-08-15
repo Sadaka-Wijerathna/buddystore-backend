@@ -33,6 +33,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
         totalVideos: bot._count.videos,
         minVideoCount: bot.minVideoCount,
         pricePerVideo: bot.pricePerVideo,
+        showPreviews: bot.showPreviews,
       })),
     });
   } catch (error) {
@@ -72,6 +73,7 @@ export const createBot = async (req: AuthRequest, res: Response): Promise<void> 
         pricePerVideo: pricePerVideo ? parseFloat(pricePerVideo) : 5,
         collectVideos: collectVideos !== undefined ? Boolean(collectVideos) : true,
         collectPhotos: collectPhotos !== undefined ? Boolean(collectPhotos) : false,
+        showPreviews: showPreviews !== undefined ? Boolean(showPreviews) : true,
       },
     });
 
@@ -114,6 +116,7 @@ export const createBot = async (req: AuthRequest, res: Response): Promise<void> 
         collectionMode: bot.collectionMode,
         collectVideos: bot.collectVideos,
         collectPhotos: bot.collectPhotos,
+        showPreviews: bot.showPreviews,
         totalVideos: 0,
       },
     });
@@ -179,9 +182,9 @@ export const toggleCollectionMode = async (req: AuthRequest, res: Response): Pro
 export const updateBotSettings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const { label, name, minVideoCount, pricePerVideo, collectVideos, collectPhotos } = req.body;
+    const { label, name, minVideoCount, pricePerVideo, collectVideos, collectPhotos, showPreviews } = req.body;
 
-    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean } = {};
+    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean; showPreviews?: boolean } = {};
 
     if (label !== undefined) {
       if (typeof label !== 'string' || !label.trim()) {
@@ -223,6 +226,10 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
 
     if (collectPhotos !== undefined) {
       data.collectPhotos = Boolean(collectPhotos);
+    }
+
+    if (showPreviews !== undefined) {
+      data.showPreviews = Boolean(showPreviews);
     }
 
     if (Object.keys(data).length === 0) {
@@ -768,7 +775,7 @@ export const updateUserRole = async (req: AuthRequest, res: Response): Promise<v
 
     // Notify user via Telegram
     try {
-      const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://buddystore.vercel.app';
+      const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
       const msg = role === 'ADMIN' 
         ? `🚀 *Congratulations!* You have been promoted to an **Administrator** on [BuddyStore](${frontendUrl}).`
         : "ℹ️ Your administrative privileges have been removed. You are now a standard User.";
@@ -2027,7 +2034,32 @@ export const adminClearAffiliateData = async (_req: AuthRequest, res: Response):
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
-// ─── Bank Accounts Management (Admin) ───────────────────────────────────────
+// ─── Bank Accounts Management (Admin) ──────────────────────────────────────────
+
+export const adminReorderBankAccounts = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { updates } = req.body as { updates: { id: string; order: number }[] };
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+      res.status(400).json({ success: false, message: 'Updates array is required' });
+      return;
+    }
+
+    await prisma.$transaction(
+      updates.map((u) =>
+        prisma.bankAccount.update({
+          where: { id: u.id },
+          data: { order: u.order },
+        })
+      )
+    );
+
+    res.json({ success: true, message: 'Bank accounts reordered successfully' });
+  } catch (error) {
+    console.error('[adminReorderBankAccounts]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
 
 export const adminGetBankAccounts = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -2049,14 +2081,21 @@ export const adminCreateBankAccount = async (req: AuthRequest, res: Response): P
       return;
     }
 
+    let logo = null;
+    if (req.file) {
+      const filename = `bank_${Date.now()}`;
+      logo = await uploadBanner(req.file.buffer, filename);
+    }
+
     const account = await prisma.bankAccount.create({
       data: {
         bankName,
         accountName,
         accountNumber,
         branch,
-        isActive: isActive !== undefined ? isActive : true,
-        order: order !== undefined ? parseInt(String(order)) : 0,
+        logo,
+        isActive: isActive !== undefined ? isActive === 'true' || isActive === true : true,
+        order: order !== undefined && order !== '' ? parseInt(String(order)) : 0,
       },
     });
 
@@ -2072,16 +2111,28 @@ export const adminUpdateBankAccount = async (req: AuthRequest, res: Response): P
     const { id } = req.params;
     const { bankName, accountName, accountNumber, branch, isActive, order } = req.body;
 
+    const dataToUpdate: any = {
+      bankName,
+      accountName,
+      accountNumber,
+      branch,
+    };
+    
+    if (isActive !== undefined) {
+      dataToUpdate.isActive = isActive === 'true' || isActive === true;
+    }
+    if (order !== undefined && order !== '') {
+      dataToUpdate.order = parseInt(String(order));
+    }
+    
+    if (req.file) {
+      const filename = `bank_${id}_${Date.now()}`;
+      dataToUpdate.logo = await uploadBanner(req.file.buffer, filename);
+    }
+
     const account = await prisma.bankAccount.update({
       where: { id: id as string },
-      data: {
-        bankName,
-        accountName,
-        accountNumber,
-        branch,
-        isActive,
-        order: order !== undefined ? parseInt(String(order)) : undefined,
-      },
+      data: dataToUpdate,
     });
 
     res.json({ success: true, data: account });
