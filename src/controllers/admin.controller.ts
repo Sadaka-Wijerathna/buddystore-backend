@@ -45,7 +45,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
 // ─── Create a new bot for a category ──────────────────────────────────────
 export const createBot = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { name, token, category, label, minVideoCount, pricePerVideo, collectVideos, collectPhotos } = req.body;
+    const { name, token, category, label, minVideoCount, pricePerVideo, collectVideos, collectPhotos, showPreviews } = req.body;
 
     if (!name || !token || !category || typeof category !== 'string' || category.trim() === '') {
       res.status(400).json({ success: false, message: 'name, bot token, and a valid category slug are required' });
