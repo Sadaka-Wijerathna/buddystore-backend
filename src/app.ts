@@ -66,6 +66,17 @@ app.get('/health', (_req, res) => {
 
 // ─── Telegram Webhook Routes ──────────────────────────────────────────────────
 let _webhookRouter: express.Router | null = null;
+
+/**
+ * Call this after registering a new category bot at runtime so the cached
+ * webhook router is discarded. The next incoming Telegram update will
+ * trigger a fresh rebuild that includes the new bot's route.
+ */
+export function resetWebhookRouter(): void {
+  _webhookRouter = null;
+  console.log('[Webhook] 🔄 Router cache cleared — will rebuild on next request');
+}
+
 app.use('/webhooks', (req, res, next) => {
   console.log(`[Webhook] 📥 Incoming request: ${req.method} ${req.url}`);
   if (!_webhookRouter) {
