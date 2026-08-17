@@ -78,27 +78,25 @@ export const createBot = async (req: AuthRequest, res: Response): Promise<void> 
     });
 
     // Register bot instance dynamically
-    const { registerCategoryBot, categoryBots } = await import('../bots/category.bot');
+    const { registerCategoryBot } = await import('../bots/category.bot');
     const newBotInstance = registerCategoryBot(bot.category, bot.token!, bot.name);
 
-    // ── Also register webhook + Express route so the bot receives updates immediately ──
-    // Without this, Telegram never knows where to POST updates for this newly-created bot.
-    const { webhookCallback } = await import('grammy');
+    // ── Register webhook with Telegram + invalidate the cached router ──────────
+    // Telegram needs to know the HTTPS endpoint for the new bot.
+    // Then we reset the webhook router cache so the next incoming update
+    // triggers a fresh rebuild that includes this new bot's route.
     const webhookBase   = config.webhookBaseUrl;
     const webhookSecret = config.webhookSecret || undefined;
     const slug = bot.name.replace(/^@/, '').toLowerCase();
 
     if (webhookBase && newBotInstance.bot) {
-      // Tell Telegram where to deliver updates
+      // Tell Telegram where to deliver updates for this bot
       await newBotInstance.registerWebhook(webhookBase, slug, webhookSecret);
 
-      // Mount the Express route so incoming webhook requests are handled
-      const { default: expressApp } = await import('../app');
-      expressApp.post(
-        `/webhooks/${slug}`,
-        webhookCallback(newBotInstance.bot, 'express', { secretToken: webhookSecret })
-      );
-      console.log(`[createBot] Mounted live webhook route: POST /webhooks/${slug}`);
+      // Invalidate the cached webhook router — rebuilt on next Telegram request
+      const { resetWebhookRouter } = await import('../app');
+      resetWebhookRouter();
+      console.log(`[createBot] Webhook router reset — new route /webhooks/${slug} will be active on next request`);
     } else if (!webhookBase) {
       console.warn(`[createBot] WEBHOOK_BASE_URL not set — webhook for ${bot.name} not registered`);
     }
