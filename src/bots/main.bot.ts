@@ -66,6 +66,25 @@ mainBot.use(async (ctx, next) => {
     return;
   }
 
+  // Handle preview video delivery
+  if (payload.startsWith('preview_')) {
+    const videoId = payload.replace('preview_', '').trim();
+    try {
+      const video = await prisma.videos.findUnique({ where: { id: videoId } });
+      if (video) {
+        await ctx.replyWithVideo(video.fileId, {
+          caption: 'Here is the video you requested from the gallery preview! 🎁'
+        });
+      } else {
+        await ctx.reply('❌ Video not found or no longer available.');
+      }
+    } catch (e) {
+      console.error(`[MainBot] preview error:`, e);
+      await ctx.reply('❌ Something went wrong while retrieving the video.');
+    }
+    return;
+  }
+
   // Look up the registration token
   const regToken = await prisma.registrationToken.findUnique({
     where: { token: payload },

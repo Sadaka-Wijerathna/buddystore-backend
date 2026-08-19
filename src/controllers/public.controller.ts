@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { AuthRequest } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 
 // GET /api/v1/public/special-collections
@@ -138,10 +139,10 @@ export const getCategoryThumbnails = async (req: Request, res: Response): Promis
     const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '100'), 10) || 100));
     const skip  = (page - 1) * limit;
 
-    const [thumbnailRows, total] = await Promise.all([
+    const [thumbnailRows, total, bot] = await Promise.all([
       prisma.videos.findMany({
         where: { category: category as any, thumbnailUrl: { not: null } },
-        select: { thumbnailUrl: true, collectedAt: true },
+        select: { id: true, thumbnailUrl: true, collectedAt: true },
         orderBy: { collectedAt: 'desc' },
         skip,
         take: limit,
@@ -149,12 +150,18 @@ export const getCategoryThumbnails = async (req: Request, res: Response): Promis
       prisma.videos.count({
         where: { category: category as any, thumbnailUrl: { not: null } },
       }),
+      prisma.bot.findUnique({
+        where: { category: category as any },
+        select: { name: true }
+      }),
     ]);
 
     res.json({
       success: true,
       data: {
+        botUsername: bot?.name || 'BuddyStore_bot',
         thumbnails: thumbnailRows.map(r => ({
+          id: r.id,
           url: r.thumbnailUrl as string,
           collectedAt: r.collectedAt.toISOString(),
         })),
@@ -166,6 +173,7 @@ export const getCategoryThumbnails = async (req: Request, res: Response): Promis
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
 // GET /api/v1/public/bank-accounts
 export const getPublicBankAccounts = async (_req: Request, res: Response): Promise<void> => {
   try {
