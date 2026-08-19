@@ -207,7 +207,7 @@ export const statusController = async (req: AuthRequest, res: Response): Promise
     const adminId = req.user?.id || 'admin';
     const client = await mtprotoService.getConnectedClient(adminId);
     const authorized = !!client;
-    const importStatus = mtprotoService.getStatus(adminId);
+    const importStatus = await mtprotoService.getStatus(adminId);
 
     let sessionInfo = null;
     if (client) {

@@ -509,9 +509,52 @@ export async function login(adminId: string, code: string, password?: string) {
 
 /**
  * Gets the current import progress status.
+ * Falls back to the most recent DB job when the in-memory map is empty
+ * (e.g. after a server restart / Render cold-start).
  */
-export function getStatus(adminId: string) {
-  return importProgressMap[adminId] || {
+export async function getStatus(adminId: string): Promise<ImportProgress> {
+  if (importProgressMap[adminId]) {
+    return importProgressMap[adminId];
+  }
+
+  // In-memory map is empty — try to recover the last known state from the DB.
+  try {
+    const lastJob = await prisma.telegramImportJob.findFirst({
+      where: { adminId },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    if (lastJob) {
+      let logs: string[] = [];
+      if (lastJob.logs) {
+        try { logs = typeof lastJob.logs === 'string' ? JSON.parse(lastJob.logs as string) : (lastJob.logs as string[]); } catch (_) {}
+      }
+
+      // Map DB status (uppercase) → in-memory status (lowercase)
+      const dbStatusMap: Record<string, ImportProgress['status']> = {
+        RUNNING: 'running',
+        COMPLETED: 'completed',
+        STOPPED: 'stopped',
+        FAILED: 'failed',
+      };
+      const status: ImportProgress['status'] = dbStatusMap[lastJob.status] ?? 'idle';
+
+      // Restore into memory so subsequent polls are instant
+      importProgressMap[adminId] = {
+        status,
+        progress: lastJob.progress,
+        total: lastJob.total,
+        message: lastJob.message ?? '',
+        logs,
+      };
+
+      return importProgressMap[adminId];
+    }
+  } catch (dbErr) {
+    console.error('[getStatus] DB fallback failed:', dbErr);
+  }
+
+  return {
     status: 'idle',
     progress: 0,
     total: 0,
@@ -657,6 +700,9 @@ export async function startImport(
         : (lastMsgId ?? undefined);
 
       // Use iterMessages with video filter. This is extremely fast and avoids downloading non-video messages.
+      // Emit live in-memory scan progress every 100 videos so the frontend shows a running count
+      // instead of staying at 0 for the entire (potentially long) scan phase.
+      let scanTick = 0;
       for await (const message of client.iterMessages(sourceEntity, {
         filter: new Api.InputMessagesFilterVideo(),
         ...(effectiveMinId ? { minId: effectiveMinId } : {}),
@@ -664,6 +710,16 @@ export async function startImport(
       })) {
         if (controller.stop) break;
         videoIds.push((message as Api.Message).id);
+        scanTick++;
+        // Update in-memory only (no DB) every 100 videos during scan
+        if (scanTick % 100 === 0) {
+          const inMemory = importProgressMap[adminId];
+          if (inMemory) {
+            inMemory.message = `Scanning source chat... ${scanTick} videos found so far`;
+            inMemory.progress = 0;
+            inMemory.total = scanTick; // tentative total so frontend can show the number
+          }
+        }
       }
 
       if (controller.stop) {
