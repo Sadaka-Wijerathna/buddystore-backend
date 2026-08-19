@@ -159,43 +159,39 @@ async function processJob(jobId: string) {
     console.log(`[Job] Order ${orderId} completed: ${sentCount}/${videoCount} videos sent`);
 
   } else {
-    // ⚠️ Under-delivered — mark job FAILED and reset order to CONFIRMED
-    // so the admin can see it needs attention and manually re-trigger.
+    // ⚠️ Under-delivered — mark this job FAILED, then silently enqueue a new
+    // job for the remaining videos so delivery continues without interrupting the user.
+    const remaining = videoCount - sentCount;
     const percent = Math.round((sentCount / videoCount) * 100);
-    const errorMsg = `Under-delivered: only ${sentCount}/${videoCount} videos sent (store stock may be too low)`;
+    const errorMsg = `Under-delivered: only ${sentCount}/${videoCount} sent. Re-queued ${remaining} remaining.`;
 
     await prisma.videoDeliveryJob.update({
       where: { id: jobId },
       data: { status: 'FAILED', progress: percent, error: errorMsg },
     });
+
+    // Silently create a new job for the remaining videos (no message to user)
+    await prisma.videoDeliveryJob.create({
+      data: {
+        orderId,
+        userId,
+        userTelegramId,
+        category,
+        videoCount: remaining,
+        status: 'PENDING',
+      },
+    });
+
+    // Keep the order in DELIVERING so the user sees continuous progress
     await prisma.order.update({
       where: { id: orderId },
-      data: { status: 'CONFIRMED' }, // Reset so admin can review & re-trigger
+      data: { status: 'DELIVERING' },
     });
 
-    // Notify user of partial delivery
-    try {
-      const order = await prisma.order.findUnique({ where: { id: orderId }, include: { bot: true } });
-      const categoryLabel = order?.bot?.name ?? category.replace(/_/g, ' ');
-      const remaining = videoCount - sentCount;
-
-      await mainBot.api.sendMessage(
-        userTelegramId.toString(),
-        `⚠️ *Partial Delivery Notice*\n\n` +
-        `We successfully sent *${sentCount} out of ${videoCount}* videos from your *${categoryLabel}* order.\n\n` +
-        `📦 *Order ID:* \`${orderId}\`\n` +
-        `📉 *Remaining:* ${remaining} video${remaining !== 1 ? 's' : ''}\n\n` +
-        `Our team has been notified and will complete the delivery shortly. We apologise for the inconvenience!`,
-        { parse_mode: 'Markdown' }
-      );
-    } catch (err) {
-      console.error(`[Job] Failed to send partial delivery notice for order ${orderId}:`, err);
-    }
-
-    io?.to(`order:${orderId}`).emit('order:status', {
-      orderId, status: 'CONFIRMED', delivered: sentCount, total: videoCount, percentComplete: Math.round((sentCount / videoCount) * 100),
+    io?.to(`order:${orderId}`).emit('order:progress', {
+      orderId, delivered: sentCount, total: videoCount, percentComplete: percent,
     });
-    console.warn(`[Job] Order ${orderId} UNDER-DELIVERED: ${sentCount}/${videoCount} videos sent. Reset to CONFIRMED.`);
+    console.warn(`[Job] Order ${orderId} UNDER-DELIVERED: ${sentCount}/${videoCount} sent. Re-queued ${remaining} remaining videos (no user notification).`);
   }
 }
 
