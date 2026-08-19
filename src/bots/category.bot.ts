@@ -96,6 +96,7 @@ export class CategoryBot {
       if (!from) return;
 
       const payload = ctx.match as string | undefined; // text after /start
+      console.log(`[${this.name}] /start command received! Payload: "${payload}"`);
 
       // If a token payload was sent, it's a checkout verification
       if (payload && payload.length > 8) {
@@ -120,6 +121,25 @@ export class CategoryBot {
         } catch (e) {
           console.error(`[${this.name}] token verify error:`, e);
         }
+      }
+
+      // Handle preview video delivery
+      if (payload && payload.startsWith('preview_')) {
+        const videoId = payload.replace('preview_', '');
+        try {
+          const video = await prisma.videos.findUnique({ where: { id: videoId } });
+          if (video) {
+            await ctx.replyWithVideo(video.fileId, {
+              caption: 'Here is the video you requested from the gallery preview! 🎁'
+            });
+          } else {
+            await ctx.reply('❌ Video not found or no longer available.');
+          }
+        } catch (e) {
+          console.error(`[${this.name}] preview error:`, e);
+          await ctx.reply('❌ Something went wrong while retrieving the video.');
+        }
+        return;
       }
 
       // Regular /start (no payload or unknown payload)

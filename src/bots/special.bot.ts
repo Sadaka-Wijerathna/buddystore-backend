@@ -253,6 +253,25 @@ if (specialBotInstance) {
 
     const slug = (ctx.match as string | undefined)?.trim().toLowerCase();
 
+    // Handle preview video delivery (from the general gallery)
+    if (slug && slug.startsWith('preview_')) {
+      const videoId = slug.replace('preview_', '').trim();
+      try {
+        const video = await prisma.videos.findUnique({ where: { id: videoId } });
+        if (video) {
+          await ctx.replyWithVideo(video.fileId, {
+            caption: 'Here is the video you requested from the gallery preview! 🎁'
+          });
+        } else {
+          await ctx.reply('❌ Video not found or no longer available.');
+        }
+      } catch (e) {
+        console.error(`[BuddySpecial1Bot] preview error:`, e);
+        await ctx.reply('❌ Something went wrong while retrieving the video.');
+      }
+      return;
+    }
+
     if (!slug) {
       await ctx.reply(
         `👋 Welcome to *BuddySpecial1Bot*!\n\nUse the special links on BuddyStore to access exclusive video collections. 🎬`,

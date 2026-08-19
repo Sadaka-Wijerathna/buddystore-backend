@@ -547,7 +547,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response): Promise<voi
         where,
         include: {
           user: {
-            select: { telegramUsername: true, firstName: true, lastName: true, photoUrl: true },
+            select: { id: true, telegramUsername: true, firstName: true, lastName: true, photoUrl: true },
           },
           _count: { select: { videoDeliveries: true } },
         },
@@ -882,7 +882,7 @@ export const getUserOrders = async (req: AuthRequest, res: Response): Promise<vo
 
     const user = await prisma.user.findUnique({
       where: { id: targetId },
-      select: { id: true, firstName: true, lastName: true, telegramUsername: true },
+      select: { id: true, firstName: true, lastName: true, telegramUsername: true, photoUrl: true },
     });
     if (!user) {
       res.status(404).json({ success: false, message: 'User not found' });
