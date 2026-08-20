@@ -29,8 +29,8 @@ router.patch('/special-collections/:id/collection-mode', adminController.toggleS
 router.delete('/special-collections/:id/videos', adminController.clearSpecialCollectionVideos);
 router.delete('/special-collections/:id', adminController.deleteSpecialCollection);
 
-// Users (read-only for all admins — write actions for SUPER_ADMIN only)
-router.get('/users/export', adminController.exportUsersCSV);
+// Users (read-only for all admins — write actions and data exports for SUPER_ADMIN only)
+router.get('/users/export', requireSuperAdmin, adminController.exportUsersCSV); // Fix #12: restricted to SUPER_ADMIN
 router.get('/users', adminController.getUsers);
 router.put('/users/:id/role', requireSuperAdmin, adminController.updateUserRole);
 router.patch('/users/:id/ban', requireSuperAdmin, adminController.banUser);

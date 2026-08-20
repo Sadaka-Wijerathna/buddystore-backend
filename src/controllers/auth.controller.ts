@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
+import { randomInt } from 'crypto';
 import prisma from '../lib/prisma';
 import config from '../config';
 import { dispatchNotification } from './notification.controller';
@@ -23,6 +24,19 @@ function getDeviceType(req: Request): string {
   if (/mobile|android|iphone|ipad|ipod|blackberry|windows phone/i.test(ua)) return 'Mobile';
   if (/tablet|ipad/i.test(ua)) return 'Tablet';
   return 'Desktop';
+}
+
+/**
+ * Fix #7: Password complexity validator.
+ * Returns an error message string if the password is too weak, or null if it passes.
+ * Rules: 8+ chars, at least one uppercase, one lowercase, one digit.
+ */
+function validatePassword(password: string): string | null {
+  if (password.length < 8) return 'Password must be at least 8 characters.';
+  if (!/[A-Z]/.test(password)) return 'Password must contain at least one uppercase letter.';
+  if (!/[a-z]/.test(password)) return 'Password must contain at least one lowercase letter.';
+  if (!/[0-9]/.test(password)) return 'Password must contain at least one number.';
+  return null;
 }
 
 // Lazy-load mainBot to avoid crashing the entire controller if the
@@ -68,16 +82,15 @@ export async function syncTelegramProfile(telegramId: bigint | string): Promise<
       const chat = await bot.api.getChat(Number(telegramId));
       if (chat.type !== 'private') return null;
 
+      // Fix #9: Do NOT embed the raw bot token in the URL.
+      // Store only the Telegram file_id — the /me/photo endpoint resolves it
+      // server-side on demand so the token never leaves the backend.
       let photoUrl = null;
       try {
         const photos = await bot.api.getUserProfilePhotos(Number(telegramId), { limit: 1 });
         if (photos.total_count && photos.photos[0]?.[0]) {
-          const fileId = photos.photos[0][0].file_id;
-          const file = await bot.api.getFile(fileId);
-          if (file.file_path) {
-            const botToken = config.bots.main;
-            photoUrl = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
-          }
+          // Store the opaque file_id, not https://api.telegram.org/file/bot<TOKEN>/...
+          photoUrl = `tg-file:${photos.photos[0][0].file_id}`;
         }
       } catch {
         // ignore photo fetch error
@@ -96,6 +109,7 @@ export async function syncTelegramProfile(telegramId: bigint | string): Promise<
 
   return Promise.race([fetch(), timeout]);
 }
+
 
 // ─── Login Step 1: Check if username has an account ───────────────────────────
 export const checkLoginUsername = async (req: Request, res: Response): Promise<void> => {
@@ -276,8 +290,10 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    if (password.length < 8) {
-      res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
+    // Fix #7: Enforce password complexity — length + uppercase + lowercase + digit
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      res.status(400).json({ success: false, message: passwordError });
       return;
     }
 
@@ -332,13 +348,12 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
       lastName: regToken.lastName || null,
       languageCode: regToken.languageCode || null,
       passwordHash,
-      lastIpAddress: clientIp,
-      deviceType: getDeviceType(req),
+      // Privacy: we do NOT store IP addresses or device types.
       lastLoginAt: new Date(),
       referralCode: myReferralCode,
       referredById,
-      role: regToken.telegramUsername.toLowerCase() === 'buddyseller' ? 'ADMIN' : 'USER',
-      adminRole: regToken.telegramUsername.toLowerCase() === 'buddyseller' ? 'SUPER_ADMIN' : null,
+      role: regToken.telegramUsername.toLowerCase() === config.superAdminUsername ? 'ADMIN' : 'USER',
+      adminRole: regToken.telegramUsername.toLowerCase() === config.superAdminUsername ? 'SUPER_ADMIN' : null,
     };
 
     // Fetch dynamic reward amount
@@ -467,8 +482,8 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Force buddyseller to have SUPER_ADMIN if missed somehow
-    if (user.telegramUsername.toLowerCase() === 'buddyseller' && user.adminRole !== 'SUPER_ADMIN') {
+    // Force super admin to have SUPER_ADMIN role if missed somehow
+    if (user.telegramUsername.toLowerCase() === config.superAdminUsername && user.adminRole !== 'SUPER_ADMIN') {
       user.role = 'ADMIN';
       user.adminRole = 'SUPER_ADMIN';
       await prisma.user.update({
@@ -500,12 +515,11 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // Fetch Telegram profile photo
     const profile = await syncTelegramProfile(user.telegramId);
 
-    // ─── Record IP / device / last-login / profile (fire-and-forget) ───────
+    // ─── Record last-login and profile update (fire-and-forget) ────────────
+    // Privacy: IP address and device type are intentionally NOT stored.
     prisma.user.update({
       where: { id: user.id },
       data: {
-        lastIpAddress: clientIp,
-        deviceType: getDeviceType(req),
         lastLoginAt: new Date(),
         ...(profile && { 
           photoUrl: profile.photoUrl,
@@ -593,8 +607,8 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
       }
     }
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Fix #6: Use crypto.randomInt — Math.random() is NOT cryptographically secure
+    const otp = randomInt(100000, 999999).toString();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
     // Delete any existing unused OTPs for this user
@@ -684,8 +698,10 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    if (newPassword.length < 8) {
-      res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
+    // Fix #7: Apply password complexity validation
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) {
+      res.status(400).json({ success: false, message: passwordError });
       return;
     }
 
@@ -754,16 +770,12 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
 
-    // ─── Update IP / device / last-login on every refresh (fire-and-forget) ───
-    const clientIp = getClientIp(req);
+    // ─── Update last-login on every refresh (fire-and-forget) ──────────────
+    // Privacy: IP address and device type are intentionally NOT stored.
     prisma.user.update({
       where: { id: user.id },
-      data: {
-        lastIpAddress: clientIp,
-        deviceType: getDeviceType(req),
-        lastLoginAt: new Date(),
-      },
-    }).catch(e => console.error('[refreshToken] IP update failed:', e));
+      data: { lastLoginAt: new Date() },
+    }).catch(e => console.error('[refreshToken] last-login update failed:', e));
 
     // Fetch Telegram profile (non-blocking)
     const profile = await syncTelegramProfile(user.telegramId);
@@ -816,8 +828,10 @@ export const changePassword = async (req: AuthRequest, res: Response): Promise<v
       return;
     }
 
-    if (newPassword.length < 8) {
-      res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
+    // Fix #7: Apply password complexity validation
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) {
+      res.status(400).json({ success: false, message: passwordError });
       return;
     }
 
@@ -934,7 +948,7 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
-      select: { telegramId: true, telegramUsername: true },
+      select: { telegramId: true, telegramUsername: true, photoUrl: true },
     });
 
     if (!user) {
@@ -961,10 +975,33 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
       });
     }
 
+    // Fix #9: Resolve tg-file:<fileId> → real CDN URL server-side.
+    // The bot token is used only here, never stored or returned to the client.
+    let resolvedPhotoUrl: string | null = profile?.photoUrl || null;
+    if (resolvedPhotoUrl?.startsWith('tg-file:')) {
+      try {
+        const bot = getMainBot();
+        if (bot) {
+          const fileId = resolvedPhotoUrl.replace('tg-file:', '');
+          const file = await bot.api.getFile(fileId);
+          if (file.file_path) {
+            // This is a short-lived CDN URL — the token is server-side only
+            resolvedPhotoUrl = `https://api.telegram.org/file/bot${config.bots.main}/${file.file_path}`;
+          } else {
+            resolvedPhotoUrl = null;
+          }
+        } else {
+          resolvedPhotoUrl = null;
+        }
+      } catch {
+        resolvedPhotoUrl = null;
+      }
+    }
+
     res.json({ 
       success: true, 
       data: { 
-        photoUrl: profile?.photoUrl || null,
+        photoUrl: resolvedPhotoUrl,
         firstName: profile?.firstName,
         lastName: profile?.lastName,
         telegramUsername: profile?.username
@@ -975,3 +1012,4 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+

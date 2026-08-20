@@ -252,6 +252,7 @@ enum PaymentMethod {
   CRYPTO
   WALLET
   STARS
+  BINANCE
 }
 
 // ─────────────────────────────────────────
@@ -556,3 +557,33 @@ enum TelegramImportJobStatus {
   FAILED
 }
 
+// ─────────────────────────────────────────
+// Audit Log — tamper-evident trail of sensitive admin actions
+// ─────────────────────────────────────────
+// adminId is stored as a plain String (not a FK) so log rows are preserved
+// even if the admin account is later deleted.
+model AuditLog {
+  id           String      @id @default(uuid())
+  action       AuditAction
+  adminId      String      // acting admin's user ID (no FK — survives account deletion)
+  targetUserId String?     // the user being acted upon (if applicable)
+  ip           String?     // client IP of the admin at the time of the action
+  metadata     String?     // JSON string with extra context (username, reason, etc.)
+  createdAt    DateTime    @default(now())
+
+  @@index([adminId])
+  @@index([createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  IMPERSONATE   // Admin used God Mode to log in as a user
+  BAN_USER      // Admin banned a user account
+  UNBAN_USER    // Admin unbanned a user account
+  DELETE_USER   // Admin permanently deleted a user account
+  BAN_IP        // Admin banned an IP address
+  UPDATE_ROLE   // Admin changed another user's role
+  EXPORT_CSV    // Admin exported the user CSV
+  WALLET_ADJUST // Admin manually adjusted a user's wallet balance
+}

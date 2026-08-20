@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, AuditAction } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { videoDeliveryQueue } from '../jobs/video.queue';
@@ -1832,7 +1832,24 @@ export const impersonateUser = async (req: AuthRequest, res: Response): Promise<
       { expiresIn: '2h' } as jwt.SignOptions
     );
 
-    console.log(`[GodMode] Admin ${adminId} is impersonating user ${target.id} (@${target.telegramUsername})`);
+    // Fix #8: Write a fully-typed audit log entry — every impersonation is permanently traceable.
+    // Fire-and-forget — never let audit logging block or fail the response.
+    const clientIp =
+      (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ??
+      req.socket?.remoteAddress ?? 'unknown';
+
+    prisma.auditLog.create({
+      data: {
+        action: AuditAction.IMPERSONATE,
+        adminId,
+        targetUserId: target.id,
+        ip: clientIp,
+        metadata: JSON.stringify({ targetUsername: target.telegramUsername }),
+      },
+    }).catch((e: unknown) => console.error('[GodMode] Audit log write failed:', e));
+
+    console.log(`[GodMode] Admin ${adminId} is impersonating user ${target.id} (@${target.telegramUsername}) from IP ${clientIp}`);
+
 
     res.json({
       success: true,
@@ -1849,6 +1866,7 @@ export const impersonateUser = async (req: AuthRequest, res: Response): Promise<
         },
       },
     });
+
   } catch (error) {
     console.error('[impersonateUser]', error);
     res.status(500).json({ success: false, message: 'Server error' });

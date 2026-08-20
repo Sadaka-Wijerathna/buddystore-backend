@@ -6,6 +6,7 @@ import { uploadReceipt } from '../lib/cloudinary';
 import { getIO } from '../lib/socket';
 import { videoDeliveryQueue } from '../jobs/video.queue';
 import { mainBot } from '../bots/main.bot';
+import { notifyAdminsOfNewOrder } from '../lib/telegram-notifications';
 import config from '../config';
 
 /** Emit a real-time alert to all connected admin clients */
@@ -272,6 +273,15 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       priceAmount: order.priceAmount,
       createdAt: order.createdAt,
     });
+
+    notifyAdminsOfNewOrder(
+      [order],
+      userDb!,
+      order.priceAmount,
+      order.paymentMethod,
+      receiptUrl
+    ).catch(err => console.error('[createOrder] Failed to notify admins on Telegram:', err));
+
 
     res.status(201).json({
       success: true,
@@ -616,6 +626,15 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
       });
       return { orderId: o.id, category: o.category, status: o.status };
     });
+
+    notifyAdminsOfNewOrder(
+      createdOrders,
+      userDb!,
+      totalPriceRequired, // Note: For batch, totalPrice is computed earlier in this function
+      paymentMethod,
+      receiptUrl
+    ).catch(err => console.error('[createBatchOrders] Failed to notify admins on Telegram:', err));
+
 
     res.status(201).json({
       success: true,

@@ -6,12 +6,20 @@ const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
 
+  // ─── Super Admin ──────────────────────────────────────────────────────────
+  // Set SUPER_ADMIN_USERNAME in your .env to your Telegram username.
+  // Avoid hardcoding a username in source code.
+  superAdminUsername: (process.env.SUPER_ADMIN_USERNAME || 'buddyseller').toLowerCase(),
+
   jwt: {
     secret: process.env.JWT_SECRET || 'fallback_secret',
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   },
 
   uploadDir: process.env.UPLOAD_DIR || 'uploads',
+
+  // ─── Body size limits ────────────────────────────────────────────────────
+  bodyLimit: process.env.BODY_LIMIT || '1mb',
 
   bots: {
     main: process.env.MAIN_BOT_TOKEN || '',
