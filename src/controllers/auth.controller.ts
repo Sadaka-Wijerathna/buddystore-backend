@@ -434,6 +434,7 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
 
     // Fetch Telegram profile (non-blocking for response)
     const profile = await syncTelegramProfile(user.telegramId);
+    const resolvedPhotoUrl = await resolveTgFileUrl(profile?.photoUrl || null);
 
     if (profile) {
       prisma.user.update({
@@ -464,7 +465,7 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
           lastName: profile?.lastName || user.lastName,
           role: user.role,
           adminRole: user.adminRole,
-          photoUrl: profile?.photoUrl || null,
+          photoUrl: resolvedPhotoUrl,
         },
       },
     });
@@ -542,6 +543,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     // Fetch Telegram profile photo
     const profile = await syncTelegramProfile(user.telegramId);
+    const resolvedPhotoUrl = await resolveTgFileUrl(profile?.photoUrl || null);
 
     // ─── Record last-login and profile update (fire-and-forget) ────────────
     // Privacy: IP address and device type are intentionally NOT stored.
@@ -581,7 +583,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
           lastName: profile?.lastName || user.lastName,
           role: user.role,
           adminRole: user.adminRole,
-          photoUrl: profile?.photoUrl || null,
+          photoUrl: resolvedPhotoUrl,
         },
       },
     });
@@ -669,10 +671,12 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
       return;
     }
 
+    const resolvedPhotoUrl = await resolveTgFileUrl(user.photoUrl || null);
+
     res.json({
       success: true,
       message: 'OTP sent to your Telegram account.',
-      data: { photoUrl: user.photoUrl || null },
+      data: { photoUrl: resolvedPhotoUrl },
     });
   } catch (error) {
     console.error('[requestPasswordReset]', error);
@@ -807,6 +811,8 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
 
     // Fetch Telegram profile (non-blocking)
     const profile = await syncTelegramProfile(user.telegramId);
+    const resolvedPhotoUrl = await resolveTgFileUrl(profile?.photoUrl || null);
+
     if (profile) {
       prisma.user.update({
         where: { id: user.id },
@@ -835,7 +841,7 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
           lastName: profile?.lastName || user.lastName,
           role: user.role,
           adminRole: user.adminRole,
-          photoUrl: profile?.photoUrl || null,
+          photoUrl: resolvedPhotoUrl,
         },
       },
     });
