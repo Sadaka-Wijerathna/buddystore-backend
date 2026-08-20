@@ -107,5 +107,51 @@ export function initCronJobs() {
   });
 
 
+  // Fix #11: Expired Token Cleanup — daily at 3 AM ──────────────────────────
+  // RegistrationToken and PasswordResetOtp rows with past expiresAt accumulate
+  // forever without cleanup. Prune them nightly to keep the DB lean.
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      const now = new Date();
+
+      const [tokens, otps] = await Promise.all([
+        prisma.registrationToken.deleteMany({ where: { expiresAt: { lt: now } } }),
+        prisma.passwordResetOtp.deleteMany({ where: { expiresAt: { lt: now } } }),
+      ]);
+
+      console.log(
+        `[Cron] 🧹 Nightly token cleanup: deleted ${tokens.count} expired registration token(s) ` +
+        `and ${otps.count} expired OTP(s).`
+      );
+    } catch (error) {
+      console.error('[Cron] Error during token cleanup:', error);
+    }
+  });
+
+  // Privacy: Weekly IP Wipe — every Sunday at 4 AM ─────────────────────────
+  // Erase any lastIpAddress / deviceType values that may have been stored before
+  // the privacy update. Runs weekly to catch any stragglers.
+  cron.schedule('0 4 * * 0', async () => {
+    try {
+      const result = await prisma.user.updateMany({
+        where: {
+          OR: [
+            { lastIpAddress: { not: null } },
+            { deviceType: { not: null } },
+          ],
+        },
+        data: {
+          lastIpAddress: null,
+          deviceType: null,
+        },
+      });
+      if (result.count > 0) {
+        console.log(`[Cron] 🔒 Privacy wipe: cleared IP/device data from ${result.count} user(s).`);
+      }
+    } catch (error) {
+      console.error('[Cron] Error during privacy IP wipe:', error);
+    }
+  });
+
   console.log('✅ Cron jobs initialized');
 }

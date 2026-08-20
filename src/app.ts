@@ -21,13 +21,47 @@ import pdfAdminRoutes from './routes/pdf.routes';
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
 import { sanitizeInput } from './middleware/sanitize.middleware';
+import { generalLimiter } from './middleware/rateLimit.middleware';
+import { authenticate } from './middleware/auth.middleware';
 
 const app = express();
 
 app.disable('x-powered-by');
 
 // ─── Core Middleware ──────────────────────────────────────────────────────────
-app.use(helmet());
+// Fix #10 + Privacy headers: Strict CSP + Referrer-Policy + Permissions-Policy
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:  ["'self'"],
+      scriptSrc:   ["'self'"],
+      styleSrc:    ["'self'", "'unsafe-inline'"],
+      imgSrc:      ["'self'", "data:", "https://api.telegram.org", "https://res.cloudinary.com"],
+      mediaSrc:    ["'self'", "https://res.cloudinary.com"],
+      connectSrc:  ["'self'"],
+      fontSrc:     ["'self'", "data:"],
+      objectSrc:   ["'none'"],
+      frameSrc:    ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  // Privacy: no-referrer stops our server URL leaking to any external service
+  referrerPolicy: { policy: 'no-referrer' },
+  // Disable browser APIs that could fingerprint or track users
+  permittedCrossDomainPolicies: { permittedPolicies: 'none' },
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginEmbedderPolicy: false, // keep false — needed for Telegram embeds
+}));
+
+// Extra privacy header — Permissions-Policy disables tracking-adjacent browser features
+app.use((_req, res, next) => {
+  res.setHeader(
+    'Permissions-Policy',
+    'camera=(), microphone=(), geolocation=(), interest-cohort=(), browsing-topics=()'
+  );
+  next();
+});
+
 
 // Support comma-separated list of allowed origins in FRONTEND_URL
 // Example: FRONTEND_URL=https://tgbuddy.store,http://localhost:3000
@@ -49,11 +83,13 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: config.bodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: config.bodyLimit }));
 
 // ─── Static Files (payment receipts) ─────────────────────────────────────────
-app.use('/uploads', express.static(path.join(process.cwd(), config.uploadDir)));
+// ⚠️  SECURITY: Receipts are NOT served as public static files.
+// They are accessed via /api/v1/admin/receipts/:filename (admin-authenticated).
+// The raw uploads directory is intentionally NOT mounted publicly.
 
 // ─── Health Check & Root ──────────────────────────────────────────────────────
 app.get('/', (_req, res) => {
@@ -95,11 +131,18 @@ app.use('/webhooks', (req, res, next) => {
 app.use(sanitizeInput);
 
 // ─── Routes ────────────────────────────────────────────────────────────────────
-app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/orders', orderRoutes);
-app.use('/api/v1/admin', adminRoutes);
-app.use('/api/v1/admin', pdfAdminRoutes);
-app.use('/api/v1/public', publicRoutes);
+// Apply the general rate-limiter to all API routes (catch-all abuse protection)
+app.use('/api/v1/auth', generalLimiter, authRoutes);
+app.use('/api/v1/orders', generalLimiter, orderRoutes);
+app.use('/api/v1/admin', generalLimiter, adminRoutes);
+app.use('/api/v1/admin', generalLimiter, pdfAdminRoutes);
+app.use('/api/v1/public', generalLimiter, publicRoutes);
+
+// ─── Protected Receipt Serving ────────────────────────────────────────────────
+// Only authenticated users (any role) may view receipt images.
+// URL pattern: /api/v1/uploads/:filename
+app.use('/api/v1/uploads', authenticate, express.static(path.join(process.cwd(), config.uploadDir)));
+
 
 // ─── Error Handling ────────────────────────────────────────────────────────────
 app.use(notFound);

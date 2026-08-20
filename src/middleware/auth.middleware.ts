@@ -38,12 +38,16 @@ export const authenticate = async (
   try {
     const authHeader = req.headers.authorization;
 
-    // Primary: Bearer header. Fallback: ?token= query param (for <video> stream URLs)
+    // JWT must ONLY come via the Authorization: Bearer <token> header.
+    // ⚠️  Never accept JWT in query params (?token=) — they are visible in server
+    // logs, browser history, and Referer headers, making token theft trivial.
+    //
+    // For <video src> stream URLs that cannot send headers, create a short-lived
+    // one-time media token (separate DB table, 60-second TTL) and exchange it
+    // for video access via a dedicated /api/v1/media/:token endpoint.
     let token: string | undefined;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.split(' ')[1];
-    } else if (req.query.token && typeof req.query.token === 'string') {
-      token = req.query.token;
     }
 
     if (!token) {
@@ -78,19 +82,8 @@ export const authenticate = async (
       return;
     }
 
-    // ─── Back-fill IP / device / last-login for users that don't have it yet ──
-    // Fire-and-forget: only triggers when lastIpAddress is null so there's no
-    // extra DB write on every request once the data is populated.
-    if (!user.lastIpAddress) {
-      prisma.user.update({
-        where: { id: user.id },
-        data: {
-          lastIpAddress: getClientIp(req),
-          deviceType: getDeviceType(req),
-          lastLoginAt: new Date(),
-        },
-      }).catch(e => console.error('[authenticate] IP back-fill failed:', e));
-    }
+    // Privacy: IP address and device type are intentionally NOT stored.
+    // Only lastLoginAt is kept (non-identifying, useful for session hygiene).
 
     req.user = { id: decoded.id, role: decoded.role, adminRole: decoded.adminRole, telegramUsername: decoded.telegramUsername };
     next();
@@ -119,8 +112,9 @@ export const requireSuperAdmin = (
   res: Response,
   next: NextFunction
 ): void => {
-  // Hardcoded safety for @buddyseller
-  const isHardcodedSuperAdmin = req.user?.telegramUsername?.toLowerCase() === 'buddyseller';
+  // Use config.superAdminUsername (from SUPER_ADMIN_USERNAME env var) instead of a
+  // hardcoded string so the super-admin identity can be changed without a code deploy.
+  const isHardcodedSuperAdmin = req.user?.telegramUsername?.toLowerCase() === config.superAdminUsername;
 
   if (!req.user || req.user.role !== 'ADMIN' || (req.user.adminRole !== 'SUPER_ADMIN' && !isHardcodedSuperAdmin)) {
     res.status(403).json({ success: false, message: 'Super Admin access required' });
