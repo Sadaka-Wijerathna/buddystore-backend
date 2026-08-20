@@ -474,8 +474,8 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
     const remainingToPay = totalPriceRequired - walletUsed;
     const fullyPaidByWallet = remainingToPay <= 0;
 
-    // Receipt is required for Bank and Crypto (Manual) unless fully paid by wallet
-    if (!fullyPaidByWallet && (paymentMethod === 'BANK' || paymentMethod === 'CRYPTO') && !req.file) {
+    // Receipt is required for Bank, Crypto, and Binance Pay unless fully paid by wallet
+    if (!fullyPaidByWallet && (paymentMethod === 'BANK' || paymentMethod === 'CRYPTO' || paymentMethod === 'BINANCE') && !req.file) {
       res.status(400).json({ success: false, message: 'Payment receipt is required' });
       return;
     }
@@ -489,7 +489,7 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
     }
 
     let receiptUrl: string | null = null;
-    if (!fullyPaidByWallet && (paymentMethod === 'BANK' || paymentMethod === 'CRYPTO') && req.file) {
+    if (!fullyPaidByWallet && (paymentMethod === 'BANK' || paymentMethod === 'CRYPTO' || paymentMethod === 'BINANCE') && req.file) {
       try {
         receiptUrl = await uploadReceipt(
           req.file.buffer,
