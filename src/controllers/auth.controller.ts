@@ -113,6 +113,27 @@ export async function syncTelegramProfile(telegramId: bigint | string): Promise<
   return Promise.race([fetch(), timeout]);
 }
 
+/**
+ * Resolve a stored `tg-file:<fileId>` to a real Telegram CDN URL server-side.
+ * Returns null if resolution fails or the URL is not a tg-file: reference.
+ */
+export async function resolveTgFileUrl(raw: string | null): Promise<string | null> {
+  if (!raw) return null;
+  if (!raw.startsWith('tg-file:')) return raw; // already a real URL
+  try {
+    const bot = getMainBot();
+    if (!bot) return null;
+    const fileId = raw.replace('tg-file:', '');
+    const file = await bot.api.getFile(fileId);
+    return file.file_path
+      ? `https://api.telegram.org/file/bot${config.bots.main}/${file.file_path}`
+      : null;
+  } catch (err) {
+    console.warn('[resolveTgFileUrl] Failed to resolve tg-file:', err);
+    return null;
+  }
+}
+
 
 // ─── Login Step 1: Check if username has an account ───────────────────────────
 export const checkLoginUsername = async (req: Request, res: Response): Promise<void> => {
@@ -156,12 +177,16 @@ export const checkLoginUsername = async (req: Request, res: Response): Promise<v
     // Fetch profile photo and info non-blocking (3 s timeout inside)
     const profile = await syncTelegramProfile(user.telegramId);
 
-    res.json({ success: true, data: { firstName: user.firstName, photoUrl: profile?.photoUrl || null } });
+    // Resolve tg-file:<fileId> → real CDN URL (token stays server-side)
+    const resolvedPhotoUrl = await resolveTgFileUrl(profile?.photoUrl || null);
+
+    res.json({ success: true, data: { firstName: user.firstName, photoUrl: resolvedPhotoUrl } });
   } catch (error) {
     console.error('[checkLoginUsername]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
 
 // ─── Step 1: Check Telegram username ──────────────────────────────────────────
 // Frontend sends telegramUsername, backend validates by fetching chat info
@@ -261,7 +286,7 @@ export const verifyBot = async (req: Request, res: Response): Promise<void> => {
     let photoUrl: string | null = null;
     if (regToken.telegramId) {
       const profile = await syncTelegramProfile(regToken.telegramId);
-      if (profile) photoUrl = profile.photoUrl;
+      if (profile) photoUrl = await resolveTgFileUrl(profile.photoUrl);
     }
 
     // Bot has been started — return user's Telegram info
@@ -978,29 +1003,8 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
       });
     }
 
-    // Fix #9: Resolve tg-file:<fileId> → real CDN URL server-side.
-    // The bot token is used only here, never stored or returned to the client.
-    let resolvedPhotoUrl: string | null = profile?.photoUrl || null;
-    if (resolvedPhotoUrl?.startsWith('tg-file:')) {
-      try {
-        const bot = getMainBot();
-        if (bot) {
-          const fileId = resolvedPhotoUrl.replace('tg-file:', '');
-          const file = await bot.api.getFile(fileId);
-          if (file.file_path) {
-            // This is a short-lived CDN URL — the token is server-side only
-            resolvedPhotoUrl = `https://api.telegram.org/file/bot${config.bots.main}/${file.file_path}`;
-          } else {
-            resolvedPhotoUrl = null;
-          }
-        } else {
-          resolvedPhotoUrl = null;
-        }
-      } catch (resolveErr) {
-        console.warn('[getPhoto] Failed to resolve tg-file to CDN URL:', resolveErr);
-        resolvedPhotoUrl = null;
-      }
-    }
+    // Resolve tg-file:<fileId> → real CDN URL (token stays server-side)
+    const resolvedPhotoUrl = await resolveTgFileUrl(profile?.photoUrl || null);
 
     res.json({ 
       success: true, 
