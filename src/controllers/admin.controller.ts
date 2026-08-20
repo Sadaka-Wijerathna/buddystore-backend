@@ -10,7 +10,7 @@ import { InputFile } from 'grammy';
 import jwt from 'jsonwebtoken';
 import config from '../config';
 import { dispatchNotification } from './notification.controller';
-import { syncTelegramProfile } from './auth.controller';
+import { syncTelegramProfile, resolveTgFileUrl } from './auth.controller';
 
 // ─── Get all bots with stats ───────────────────────────────────────────────
 export const getBots = async (_req: AuthRequest, res: Response): Promise<void> => {
@@ -468,7 +468,7 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
 
     const bannedIpSet = new Set(bannedIps.map(b => b.ip));
 
-    const mappedUsers = users.map(u => {
+    const mappedUsers = await Promise.all(users.map(async (u) => {
       const groups = new Set<string>();
       u.orders.forEach(o => {
         const timeKey = Math.floor(new Date(o.createdAt).getTime() / 5000);
@@ -482,8 +482,9 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
         _count: { orders: groups.size },
         telegramId: rest.telegramId ? rest.telegramId.toString() : null,
         ipFlagged: !!(rest.lastIpAddress && bannedIpSet.has(rest.lastIpAddress)),
+        photoUrl: await resolveTgFileUrl(rest.photoUrl || null),
       };
-    });
+    }));
 
     res.json({ success: true, data: mappedUsers, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
 
@@ -560,9 +561,11 @@ export const getAllOrders = async (req: AuthRequest, res: Response): Promise<voi
 
     res.json({
       success: true,
-      data: orders.map((order) => ({
+      data: await Promise.all(orders.map(async (order) => ({
         id: order.id,
-        user: order.user,
+        user: order.user
+          ? { ...order.user, photoUrl: await resolveTgFileUrl(order.user.photoUrl || null) }
+          : null,
         category: order.category,
         videoCount: order.videoCount,
         delivered: order._count.videoDeliveries,
@@ -572,7 +575,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response): Promise<voi
         receiptUrl: order.receiptUrl,
         createdAt: order.createdAt,
         confirmedAt: order.confirmedAt,
-      })),
+      }))),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (error) {
@@ -898,7 +901,7 @@ export const getUserOrders = async (req: AuthRequest, res: Response): Promise<vo
     res.json({
       success: true,
       data: {
-        user,
+        user: { ...user, photoUrl: await resolveTgFileUrl(user.photoUrl || null) },
         orders: orders.map(o => ({
           id: o.id,
           category: o.category,
