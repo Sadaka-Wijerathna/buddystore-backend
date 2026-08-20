@@ -242,3 +242,72 @@ export const getPublicSettings = async (_req: Request, res: Response): Promise<v
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+// GET /api/v1/public/video-gallery/preview-quota
+export const getPreviewQuota = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const LIMIT = 5;
+
+    const quota = await prisma.previewQuota.findUnique({
+      where: {
+        userId_date: { userId, date: todayStr }
+      }
+    });
+
+    const used = quota?.count || 0;
+    res.json({ success: true, used, remaining: Math.max(0, LIMIT - used), limit: LIMIT });
+  } catch (error) {
+    console.error('[getPreviewQuota]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// POST /api/v1/public/video-gallery/preview-request
+export const requestVideoPreview = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const LIMIT = 5;
+
+    // Use Prisma upsert to get or create today's quota
+    const quota = await prisma.previewQuota.upsert({
+      where: {
+        userId_date: { userId, date: todayStr }
+      },
+      update: {},
+      create: {
+        userId,
+        date: todayStr,
+        count: 0
+      }
+    });
+
+    if (quota.count >= LIMIT) {
+      res.json({ success: false, allowed: false, remaining: 0, message: 'Daily limit reached' });
+      return;
+    }
+
+    // Increment
+    await prisma.previewQuota.update({
+      where: { id: quota.id },
+      data: { count: { increment: 1 } }
+    });
+
+    res.json({ success: true, allowed: true, remaining: LIMIT - (quota.count + 1) });
+  } catch (error) {
+    console.error('[requestVideoPreview]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
