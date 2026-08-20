@@ -88,12 +88,15 @@ export async function syncTelegramProfile(telegramId: bigint | string): Promise<
       let photoUrl = null;
       try {
         const photos = await bot.api.getUserProfilePhotos(Number(telegramId), { limit: 1 });
-        if (photos.total_count && photos.photos[0]?.[0]) {
+        if (photos.total_count && photos.photos[0]?.length) {
+          // Use the largest available size (last in the array, ordered small→large)
+          const sizes = photos.photos[0];
+          const largest = sizes[sizes.length - 1];
           // Store the opaque file_id, not https://api.telegram.org/file/bot<TOKEN>/...
-          photoUrl = `tg-file:${photos.photos[0][0].file_id}`;
+          photoUrl = `tg-file:${largest.file_id}`;
         }
-      } catch {
-        // ignore photo fetch error
+      } catch (photoErr) {
+        console.warn('[syncTelegramProfile] Failed to fetch profile photo:', photoErr);
       }
 
       return {
@@ -993,7 +996,8 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
         } else {
           resolvedPhotoUrl = null;
         }
-      } catch {
+      } catch (resolveErr) {
+        console.warn('[getPhoto] Failed to resolve tg-file to CDN URL:', resolveErr);
         resolvedPhotoUrl = null;
       }
     }
