@@ -587,3 +587,18 @@ enum AuditAction {
   EXPORT_CSV    // Admin exported the user CSV
   WALLET_ADJUST // Admin manually adjusted a user's wallet balance
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Video Preview Quota — server-side daily free preview counter
+// One row per (userId, date). Resets naturally as new date rows are inserted.
+// ─────────────────────────────────────────────────────────────────────────────
+model PreviewQuota {
+  id        String   @id @default(uuid())
+  userId    String
+  date      String   // ISO date string: "YYYY-MM-DD"
+  count     Int      @default(0)
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("preview_quotas")
+}
