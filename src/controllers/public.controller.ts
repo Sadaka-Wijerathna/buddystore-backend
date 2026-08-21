@@ -252,6 +252,13 @@ export const getPreviewQuota = async (req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    const { hasActiveBadge } = await import('./badge.controller');
+    const isBadgeHolder = await hasActiveBadge(userId);
+    if (isBadgeHolder) {
+      res.json({ success: true, used: 0, remaining: 999, limit: 999, isBadgeHolder: true });
+      return;
+    }
+
     const todayStr = new Date().toISOString().slice(0, 10);
     const LIMIT = 5;
 
@@ -275,6 +282,13 @@ export const requestVideoPreview = async (req: AuthRequest, res: Response): Prom
     const userId = req.user?.id;
     if (!userId) {
       res.status(401).json({ success: false, message: 'Unauthorized' });
+      return;
+    }
+
+    const { hasActiveBadge } = await import('./badge.controller');
+    const isBadgeHolder = await hasActiveBadge(userId);
+    if (isBadgeHolder) {
+      res.json({ success: true, allowed: true, remaining: 999 });
       return;
     }
 

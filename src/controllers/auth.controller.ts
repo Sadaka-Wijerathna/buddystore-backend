@@ -570,6 +570,13 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
 
+    // Fetch active badge
+    const superBadge = await prisma.superBadge.findUnique({
+      where: { userId: user.id },
+      select: { id: true, expiresAt: true, status: true },
+    });
+    const activeBadge = (superBadge?.status === 'ACTIVE' && superBadge.expiresAt > new Date()) ? superBadge : undefined;
+
     res.json({
       success: true,
       message: 'Login successful',
@@ -584,6 +591,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
           role: user.role,
           adminRole: user.adminRole,
           photoUrl: resolvedPhotoUrl,
+          superBadge: activeBadge,
         },
       },
     });
@@ -829,6 +837,13 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
       }).catch(e => console.error('[refreshToken] Profile update failed:', e));
     }
 
+    // Fetch active badge
+    const superBadge = await prisma.superBadge.findUnique({
+      where: { userId: user.id },
+      select: { id: true, expiresAt: true, status: true },
+    });
+    const activeBadge = (superBadge?.status === 'ACTIVE' && superBadge.expiresAt > new Date()) ? superBadge : undefined;
+
     res.json({
       success: true,
       data: {
@@ -842,6 +857,7 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
           role: user.role,
           adminRole: user.adminRole,
           photoUrl: resolvedPhotoUrl,
+          superBadge: activeBadge,
         },
       },
     });
@@ -1012,13 +1028,21 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
     // Resolve tg-file:<fileId> → real CDN URL (token stays server-side)
     const resolvedPhotoUrl = await resolveTgFileUrl(profile?.photoUrl || null);
 
+    // Fetch active badge
+    const superBadge = await prisma.superBadge.findUnique({
+      where: { userId: req.user!.id },
+      select: { id: true, expiresAt: true, status: true },
+    });
+    const activeBadge = (superBadge?.status === 'ACTIVE' && superBadge.expiresAt > new Date()) ? superBadge : undefined;
+
     res.json({ 
       success: true, 
       data: { 
         photoUrl: resolvedPhotoUrl,
         firstName: profile?.firstName,
         lastName: profile?.lastName,
-        telegramUsername: profile?.username
+        telegramUsername: profile?.username,
+        superBadge: activeBadge
       } 
     });
   } catch (error) {

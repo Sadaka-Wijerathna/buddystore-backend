@@ -457,6 +457,7 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
           photoUrl: true,
           createdAt: true,
           orders: { select: { receiptUrl: true, createdAt: true } },
+          superBadge: { select: { status: true, expiresAt: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -548,7 +549,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response): Promise<voi
         where,
         include: {
           user: {
-            select: { id: true, telegramUsername: true, firstName: true, lastName: true, photoUrl: true },
+            select: { id: true, telegramUsername: true, firstName: true, lastName: true, photoUrl: true, superBadge: { select: { status: true, expiresAt: true } } },
           },
           _count: { select: { videoDeliveries: true } },
         },

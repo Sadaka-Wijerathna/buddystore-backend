@@ -17,6 +17,7 @@ import orderRoutes from './routes/order.routes';
 import adminRoutes from './routes/admin.routes';
 import publicRoutes from './routes/public.routes';
 import pdfAdminRoutes from './routes/pdf.routes';
+import badgeRoutes from './routes/badge.routes';
 
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
@@ -137,6 +138,7 @@ app.use('/api/v1/orders', generalLimiter, orderRoutes);
 app.use('/api/v1/admin', generalLimiter, adminRoutes);
 app.use('/api/v1/admin', generalLimiter, pdfAdminRoutes);
 app.use('/api/v1/public', generalLimiter, publicRoutes);
+app.use('/api/v1/badge', generalLimiter, badgeRoutes);
 
 // ─── Protected Receipt Serving ────────────────────────────────────────────────
 // Only authenticated users (any role) may view receipt images.

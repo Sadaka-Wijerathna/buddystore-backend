@@ -439,6 +439,10 @@ export class CategoryBot {
     const botRecord = await this.getBotRecord();
     if (!botRecord) throw new Error(`Bot record not found for category: ${this.category}`);
 
+    // Check if user is a Super Badge holder (disables save protection)
+    const { hasActiveBadge } = await import('../controllers/badge.controller');
+    const isBadgeHolder = await hasActiveBadge(userId);
+
     // Unrecoverable error descriptions — stop entire delivery
     const isUnrecoverable = (desc: string) =>
       desc.includes('chat not found') ||
@@ -452,7 +456,7 @@ export class CategoryBot {
         try {
           if (!this.bot) throw new Error(`${this.name} has no token configured`);
           await this.bot.api.sendVideo(userTelegramId.toString(), fileId, {
-            protect_content: true,
+            protect_content: !isBadgeHolder,
             disable_notification: true,
           });
           return true;

@@ -153,5 +153,71 @@ export function initCronJobs() {
     }
   });
 
+  // ── Super Badge Expiry Processing — daily at 1 AM ───────────────────────
+  cron.schedule('0 1 * * *', async () => {
+    try {
+      const now = new Date();
+      const expiredBadges = await prisma.superBadge.findMany({
+        where: { status: 'ACTIVE', expiresAt: { lt: now } },
+      });
+
+      let processedCount = 0;
+      for (const badge of expiredBadges) {
+        await prisma.superBadge.delete({ where: { id: badge.id } });
+
+        const { dispatchNotification } = await import('../controllers/notification.controller');
+        await dispatchNotification(
+          badge.userId,
+          'badge_expired',
+          '🏅 Super Badge Expired',
+          'Your Super Badge has expired. Renew now to get unlimited perks back!'
+        );
+        processedCount++;
+      }
+
+      if (processedCount > 0) {
+        console.log(`[Cron] 🏅 Processed ${processedCount} expired Super Badge(s).`);
+      }
+    } catch (error) {
+      console.error('[Cron] Error processing expired Super Badges:', error);
+    }
+  });
+
+  // ── Super Badge Warning — daily at 9 AM ─────────────────────────────────
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const threeDaysFromNow = new Date();
+      threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+
+      const warningBadges = await prisma.superBadge.findMany({
+        where: { 
+          status: 'ACTIVE',
+          expiresAt: {
+            gt: new Date(),
+            lte: threeDaysFromNow,
+          }
+        },
+      });
+
+      let warningCount = 0;
+      for (const badge of warningBadges) {
+        const { dispatchNotification } = await import('../controllers/notification.controller');
+        await dispatchNotification(
+          badge.userId,
+          'badge_warning',
+          '⚠️ Super Badge Expiring Soon',
+          `Your Super Badge will expire on ${badge.expiresAt.toLocaleDateString()}. Renew soon to keep your unlimited wallet and saveable videos!`
+        );
+        warningCount++;
+      }
+
+      if (warningCount > 0) {
+        console.log(`[Cron] 🏅 Sent ${warningCount} expiry warnings for Super Badges.`);
+      }
+    } catch (error) {
+      console.error('[Cron] Error sending Super Badge warnings:', error);
+    }
+  });
+
   console.log('✅ Cron jobs initialized');
 }
