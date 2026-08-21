@@ -50,6 +50,7 @@ model User {
   reviews           Review[]
   notifications     Notification[]
   pushSubscriptions PushSubscription[]
+  superBadge        SuperBadge?
 
   @@map("users")
 }
@@ -345,6 +346,7 @@ model WalletTransaction {
 enum TransactionType {
   EARNED
   SPENT
+  BADGE_PURCHASE
 }
 
 enum ReviewStatus {
@@ -601,4 +603,52 @@ model PreviewQuota {
   @@unique([userId, date])
   @@index([userId])
   @@map("preview_quotas")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Super Badge — premium subscription plans (admin-defined)
+// ─────────────────────────────────────────────────────────────────────────────
+model SuperBadgePlan {
+  id           String       @id @default(uuid())
+  name         String       // e.g. "1 Month", "3 Months"
+  durationDays Int          // e.g. 30, 90, 180
+  price        Float        // price in platform currency (USD)
+  isActive     Boolean      @default(true)
+  order        Int          @default(0) // display order in UI
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  purchases SuperBadge[]
+
+  @@map("super_badge_plans")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Super Badge — one active badge per user
+// On activation: savedWalletBalance = current balance, walletBalance set to 999999.
+// On expiry cron: walletBalance restored to savedWalletBalance, row deleted.
+// ─────────────────────────────────────────────────────────────────────────────
+model SuperBadge {
+  id                 String        @id @default(uuid())
+  userId             String        @unique // only one badge per user at a time
+  planId             String
+  status             BadgeStatus   @default(PENDING_PAYMENT)
+  expiresAt          DateTime
+  savedWalletBalance Float         @default(0) // wallet snapshot before inflation
+  paymentMethod      PaymentMethod
+  receiptUrl         String?       // null for wallet payments
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  user User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan SuperBadgePlan @relation(fields: [planId], references: [id])
+
+  @@index([status, expiresAt])
+  @@map("super_badges")
+}
+
+enum BadgeStatus {
+  PENDING_PAYMENT // receipt uploaded, waiting for admin confirm
+  ACTIVE          // badge is live; wallet inflated
+  EXPIRED         // kept briefly for audit before cron deletes
 }
