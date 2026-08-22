@@ -8,7 +8,7 @@ import { videoDeliveryQueue } from '../jobs/video.queue';
 import { mainBot } from '../bots/main.bot';
 import { notifyAdminsOfNewOrder } from '../lib/telegram-notifications';
 import config from '../config';
-
+import { hasActiveBadge } from './badge.controller';
 /** Emit a real-time alert to all connected admin clients */
 function notifyAdmins(event: string, payload: Record<string, unknown>) {
   try {
@@ -163,10 +163,15 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
     const useWallet = req.body.useWallet === 'true';
     const userDb = await prisma.user.findUnique({ where: { id: userId } });
     const userWalletBalance = userDb?.walletBalance || 0;
+    const hasBadge = await hasActiveBadge(userId);
     
     let walletUsed = 0;
-    if (useWallet && userWalletBalance > 0) {
-      walletUsed = Math.min(price, userWalletBalance);
+    if (useWallet) {
+      if (hasBadge) {
+        walletUsed = price;
+      } else if (userWalletBalance > 0) {
+        walletUsed = Math.min(price, userWalletBalance);
+      }
     }
 
     const remainingToPay = price - walletUsed;
@@ -226,7 +231,7 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
       }));
     }
 
-    if (walletUsed > 0) {
+    if (walletUsed > 0 && !hasBadge) {
       transactionJobs.push(prisma.user.update({
         where: { id: userId },
         data: { walletBalance: { decrement: walletUsed } }
@@ -465,10 +470,15 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
     // ─── Wallet Logic ─────────────────────────────────────────
     const userDb = await prisma.user.findUnique({ where: { id: userId } });
     const userWalletBalance = userDb?.walletBalance || 0;
+    const hasBadge = await hasActiveBadge(userId);
     
     let walletUsed = 0;
-    if (useWallet && userWalletBalance > 0) {
-      walletUsed = Math.min(totalPriceRequired, userWalletBalance);
+    if (useWallet) {
+      if (hasBadge) {
+        walletUsed = totalPriceRequired;
+      } else if (userWalletBalance > 0) {
+        walletUsed = Math.min(totalPriceRequired, userWalletBalance);
+      }
     }
 
     const remainingToPay = totalPriceRequired - walletUsed;
@@ -551,7 +561,7 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
       });
     }
 
-    if (walletUsed > 0) {
+    if (walletUsed > 0 && !hasBadge) {
       transactionJobs.push(prisma.user.update({
         where: { id: userId },
         data: { walletBalance: { decrement: walletUsed } }
