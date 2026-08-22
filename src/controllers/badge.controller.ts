@@ -498,6 +498,16 @@ export const adminUpdatePlan = async (req: Request, res: Response): Promise<void
 export const adminDeletePlan = async (req: Request, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
+    
+    const badgesCount = await prisma.superBadge.count({ where: { planId: id } });
+    if (badgesCount > 0) {
+      res.status(400).json({ 
+        success: false, 
+        message: 'Cannot delete plan because it is currently in use by users. Please deactivate it instead.' 
+      });
+      return;
+    }
+
     await prisma.superBadgePlan.delete({ where: { id } });
     res.json({ success: true, message: 'Plan deleted' });
   } catch (error) {
