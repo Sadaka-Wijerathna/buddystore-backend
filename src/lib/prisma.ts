@@ -5,6 +5,12 @@ import { Pool } from 'pg';
 
 function createPrismaClient() {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  
+  // Prevent idle connection terminations from crashing the Node.js process
+  pool.on('error', (err) => {
+    console.error('Unexpected error on idle database client', err);
+  });
+  
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
 }
