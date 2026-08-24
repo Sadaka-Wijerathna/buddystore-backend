@@ -1,4 +1,5 @@
 import rateLimit from 'express-rate-limit';
+import prisma from '../lib/prisma';
 
 /**
  * Shared rate-limiter instances for BuddyStore.
@@ -19,6 +20,21 @@ export const authLimiter = rateLimit({
     message: 'Too many login attempts. Please wait 15 minutes and try again.',
   },
   skipSuccessfulRequests: false,
+  skip: async (req) => {
+    try {
+      const username = req.body?.username;
+      if (!username) return false;
+      
+      const user = await prisma.user.findUnique({
+        where: { username },
+        select: { role: true },
+      });
+      
+      return user?.role === 'SUPER_ADMIN' || user?.role === 'ORDER_MANAGER';
+    } catch {
+      return false;
+    }
+  },
 });
 
 // ─── Registration step 1 (check-username) ────────────────────────────────────
