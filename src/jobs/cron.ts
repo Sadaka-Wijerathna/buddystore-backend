@@ -206,7 +206,7 @@ export function initCronJobs() {
           badge.userId,
           'badge_warning',
           '⚠️ Super Badge Expiring Soon',
-          `Your Super Badge will expire on ${badge.expiresAt.toLocaleDateString()}. Renew soon to keep your unlimited wallet and saveable videos!`
+          `Your Super Badge will expire on ${badge.expiresAt.toLocaleDateString()}. Renew soon to keep your unlimited previews and saveable videos!`
         );
         warningCount++;
       }

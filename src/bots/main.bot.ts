@@ -2,6 +2,8 @@ import { Bot, Context, InlineKeyboard } from 'grammy';
 import config from '../config';
 import prisma from '../lib/prisma';
 import { videoDeliveryQueue } from '../jobs/video.queue';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 
 // Main bot instance — exported so auth controller and webhook router can use it
 export const mainBot = new Bot(config.bots.main);
@@ -57,12 +59,81 @@ mainBot.use(async (ctx, next) => {
     return;
   }
 
-  // If no token in start payload, just greet
+  // If no token in start payload — auto-register or welcome back
   if (!payload) {
     const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
-    await ctx.reply(
-      `👋 Welcome to BuddyStore!\n\nUse our website to register your account at ${frontendUrl}/register`
-    );
+
+    // Check if already has an account
+    const existingUser = await prisma.user.findUnique({
+      where: { telegramId: BigInt(from.id) },
+      select: { id: true, firstName: true, telegramUsername: true },
+    });
+
+    if (existingUser) {
+      // Already registered — welcome back
+      await ctx.reply(
+        `👋 Welcome back, ${existingUser.firstName}!\n\nYou already have a BuddyStore account.\n\n🔗 Login at: ${frontendUrl}/login`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // No account — check they have a username (required by schema)
+    if (!from.username) {
+      await ctx.reply(
+        `👋 Welcome to BuddyStore!\n\n⚠️ *You need a Telegram username to create an account.*\n\nPlease go to Telegram Settings → Set a username, then come back and send /start again.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // Check username not already taken by another user
+    const usernameTaken = await prisma.user.findUnique({
+      where: { telegramUsername: from.username.toLowerCase() },
+    });
+    if (usernameTaken) {
+      await ctx.reply(
+        `⚠️ A BuddyStore account already exists for @${from.username}.\n\nIf this is your account, please log in at ${frontendUrl}/login`,
+      );
+      return;
+    }
+
+    // ── Auto-create account ──────────────────────────────────────────────────
+    // Generate a readable temp password: BStore_ + 8 random alphanumeric chars
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    const tempPassword = 'BStore_' + Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const passwordHash = await bcrypt.hash(tempPassword, 12);
+    const referralCode = uuidv4().split('-')[0].toUpperCase();
+
+    try {
+      await prisma.user.create({
+        data: {
+          telegramId: BigInt(from.id),
+          telegramUsername: from.username.toLowerCase(),
+          firstName: from.first_name,
+          lastName: from.last_name || null,
+          languageCode: from.language_code || null,
+          passwordHash,
+          referralCode,
+          role: 'USER',
+        },
+      });
+
+      await ctx.reply(
+        `✅ *Account Created!*\n\nHello, ${from.first_name}! Your BuddyStore account has been set up by the admin.\n\n` +
+        `👤 *Username:* @${from.username}\n` +
+        `🔐 *Temporary Password:* \`${tempPassword}\`\n\n` +
+        `⚠️ Please change your password after logging in:\n` +
+        `🔗 ${frontendUrl}/login → Settings → Change Password\n\n` +
+        `Your order will be placed shortly. Videos will be delivered here! 🎬`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (createErr) {
+      console.error('[MainBot] Auto-registration failed:', createErr);
+      await ctx.reply(
+        `❌ Something went wrong setting up your account. Please contact the admin.`
+      );
+    }
     return;
   }
 
