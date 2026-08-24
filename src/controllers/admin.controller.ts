@@ -1120,15 +1120,16 @@ export const createGiftOrder = async (req: AuthRequest, res: Response): Promise<
 // 💰 Get User Category Limits (Admin view) 💰
 export const getUserCategoryLimits = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const userId = req.params.id;
+    const userId = String(req.params.id);
     const { category } = req.query;
 
     if (!category) {
       res.status(400).json({ success: false, message: 'Category is required' });
       return;
     }
+    const categoryStr = String(category);
 
-    const bot = await prisma.bot.findUnique({ where: { category: String(category) } });
+    const bot = await prisma.bot.findUnique({ where: { category: categoryStr } });
     if (!bot) {
       res.status(404).json({ success: false, message: 'No bot configured for this category' });
       return;
@@ -1136,12 +1137,12 @@ export const getUserCategoryLimits = async (req: AuthRequest, res: Response): Pr
 
     const [totalVideos, alreadyReceived] = await Promise.all([
       prisma.videos.count({
-        where: { category: String(category) },
+        where: { category: categoryStr },
       }),
       prisma.videoDelivery.count({
         where: {
-          userId,
-          video: { category: String(category) },
+          userId: userId,
+          video: { category: categoryStr },
         },
       }),
     ]);
