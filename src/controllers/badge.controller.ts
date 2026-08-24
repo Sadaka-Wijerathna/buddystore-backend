@@ -186,12 +186,6 @@ export const purchaseBadge = async (req: AuthRequest, res: Response): Promise<vo
         ]);
       } else {
         // Create new badge and activate
-        const user2 = await prisma.user.findUnique({
-          where: { id: userId },
-          select: { walletBalance: true },
-        });
-        const balanceAfterDeduction = (user2?.walletBalance ?? 0) - plan.price;
-
         await prisma.$transaction([
           prisma.superBadge.create({
             data: {
@@ -199,13 +193,12 @@ export const purchaseBadge = async (req: AuthRequest, res: Response): Promise<vo
               planId: plan.id,
               status: 'ACTIVE',
               expiresAt,
-              savedWalletBalance: balanceAfterDeduction,
               paymentMethod: 'WALLET',
             },
           }),
           prisma.user.update({
             where: { id: userId },
-            data: { walletBalance: 999999 },
+            data: { walletBalance: { decrement: plan.price } },
           }),
           prisma.walletTransaction.create({
             data: {
@@ -222,7 +215,7 @@ export const purchaseBadge = async (req: AuthRequest, res: Response): Promise<vo
         userId,
         'badge_activated',
         '🏅 Super Badge Activated!',
-        `Your Super Badge is now active until ${expiresAt.toLocaleDateString()}. Enjoy unlimited wallet, previews & saveable videos!`
+        `Your Super Badge is now active until ${expiresAt.toLocaleDateString()}. Enjoy unlimited previews & saveable videos!`
       );
 
       res.json({
@@ -339,7 +332,7 @@ export const adminConfirmBadge = async (req: AuthRequest, res: Response): Promis
       badge.userId,
       'badge_activated',
       '🏅 Super Badge Activated!',
-      `Your Super Badge payment was confirmed! Badge active until ${expiresAt.toLocaleDateString()}. Enjoy unlimited wallet, previews & saveable videos!`
+      `Your Super Badge payment was confirmed! Badge active until ${expiresAt.toLocaleDateString()}. Enjoy unlimited previews & saveable videos!`
     );
 
     res.json({

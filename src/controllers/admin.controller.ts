@@ -1117,6 +1117,180 @@ export const createGiftOrder = async (req: AuthRequest, res: Response): Promise<
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+// 💰 Get User Category Limits (Admin view) 💰
+export const getUserCategoryLimits = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.params.id;
+    const { category } = req.query;
+
+    if (!category) {
+      res.status(400).json({ success: false, message: 'Category is required' });
+      return;
+    }
+
+    const bot = await prisma.bot.findUnique({ where: { category: String(category) } });
+    if (!bot) {
+      res.status(404).json({ success: false, message: 'No bot configured for this category' });
+      return;
+    }
+
+    const [totalVideos, alreadyReceived] = await Promise.all([
+      prisma.videos.count({
+        where: { category: String(category) },
+      }),
+      prisma.videoDelivery.count({
+        where: {
+          userId,
+          video: { category: String(category) },
+        },
+      }),
+    ]);
+
+    const availableVideos = Math.max(0, totalVideos - alreadyReceived);
+
+    res.json({
+      success: true,
+      data: {
+        available: availableVideos,
+        min: bot.minVideoCount,
+        max: availableVideos,
+        totalInBot: bot.totalVideos,
+        alreadyReceived,
+        pricePerVideo: bot.pricePerVideo,
+      },
+    });
+  } catch (error) {
+    console.error('[getUserCategoryLimits]', error);
+    res.status(500).json({ success: false, message: 'Server error fetching user category limits' });
+  }
+};
+
+
+// ─── Admin Place Order (on behalf of a user) ──────────────────────────────
+export const adminPlaceOrder = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const targetId = String(req.params.id);
+    const { items, amountCollected, note } = req.body as {
+      items: { category: string; videoCount: number; price: number }[];
+      amountCollected: number;
+      note?: string;
+    };
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      res.status(400).json({ success: false, message: 'Cart items are required' });
+      return;
+    }
+    if (amountCollected === undefined || amountCollected < 0) {
+      res.status(400).json({ success: false, message: 'amountCollected is required' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: targetId },
+      select: { id: true, telegramId: true, firstName: true },
+    });
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    // Fetch bots for all categories in items
+    const categories = items.map(i => i.category);
+    const bots = await prisma.bot.findMany({
+      where: { category: { in: categories as any } }
+    });
+    const botMap = new Map(bots.map(b => [b.category, b]));
+
+    // Validate all items have valid bots
+    for (const item of items) {
+      if (!botMap.has(item.category as any)) {
+        res.status(400).json({ success: false, message: `Bot platform not found for category ${item.category}` });
+        return;
+      }
+    }
+
+    // Prepare DB operations
+    const dbOps = [];
+    const createdOrders: any[] = [];
+    
+    // Create one wallet transaction for the total collected
+    dbOps.push(
+      prisma.walletTransaction.create({
+        data: {
+          userId: user.id,
+          amount: amountCollected,
+          type: 'ADMIN_MANUAL',
+          description: note
+            ? `Admin manual order (${items.length} items) — ${note}`
+            : `Admin manual order (${items.length} items)`,
+        },
+      })
+    );
+
+    // Create an order for each item
+    for (const item of items) {
+      const bot = botMap.get(item.category as any)!;
+      dbOps.push(
+        prisma.order.create({
+          data: {
+            userId: user.id,
+            botId: bot.id,
+            category: item.category as any,
+            videoCount: item.videoCount,
+            priceAmount: item.price,
+            receiptUrl: 'ADMIN_MANUAL',
+            status: 'CONFIRMED',
+            confirmedAt: new Date(),
+          },
+        })
+      );
+    }
+
+    // Execute transaction
+    const results = await prisma.$transaction(dbOps);
+    
+    // The first result is the wallet transaction, the rest are orders
+    const orders = results.slice(1) as any[];
+
+    // Queue video delivery for each order
+    for (const order of orders) {
+      await videoDeliveryQueue.add(
+        'deliver-videos',
+        {
+          orderId: order.id,
+          userId: user.id,
+          userTelegramId: user.telegramId.toString(),
+          category: order.category,
+          videoCount: order.videoCount,
+        },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+        }
+      );
+    }
+
+    // Notify user via Telegram
+    try {
+      const totalVideos = items.reduce((sum, item) => sum + item.videoCount, 0);
+      await mainBot.api.sendMessage(
+        Number(user.telegramId),
+        `🎬 *Order Placed!*\n\nAn admin has manually processed your order for *${totalVideos} videos* across ${items.length} package(s).\n\nVideos will be delivered here shortly. Stay tuned! 🚀`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (tgErr) {
+      console.warn('[adminPlaceOrder] Telegram notify failed:', tgErr);
+    }
+
+    res.json({
+      success: true,
+      message: `Orders placed successfully for ${user.firstName}.`,
+    });
+  } catch (error) {
+    console.error('[adminPlaceOrder]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
 
 
 // ─── Analytics ────────────────────────────────────────────────────────────

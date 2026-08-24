@@ -41,6 +41,8 @@ router.post('/users/:id/message', upload.single('media'), adminController.messag
 router.post('/users/:id/wallet-adjust', adminController.adminAdjustWallet);
 router.post('/users/:id/ban-ip', requireSuperAdmin, adminController.banUserIp);
 router.post('/users/:id/impersonate', requireSuperAdmin, adminController.impersonateUser);
+router.post('/users/:id/place-order', adminController.adminPlaceOrder);
+router.get('/users/:id/limits', adminController.getUserCategoryLimits);
 
 // Broadcasts
 router.get('/broadcasts', adminController.getBroadcasts);

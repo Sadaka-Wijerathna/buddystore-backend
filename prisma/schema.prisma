@@ -347,6 +347,7 @@ enum TransactionType {
   EARNED
   SPENT
   BADGE_PURCHASE
+  ADMIN_MANUAL
 }
 
 enum ReviewStatus {
