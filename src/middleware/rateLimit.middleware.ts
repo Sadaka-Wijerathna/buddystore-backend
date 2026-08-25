@@ -26,11 +26,11 @@ export const authLimiter = rateLimit({
       if (!username) return false;
       
       const user = await prisma.user.findUnique({
-        where: { username },
-        select: { role: true },
+        where: { telegramUsername: username },
+        select: { role: true, adminRole: true },
       });
       
-      return user?.role === 'SUPER_ADMIN' || user?.role === 'ORDER_MANAGER';
+      return user?.adminRole === 'SUPER_ADMIN' || user?.adminRole === 'ORDER_MANAGER';
     } catch {
       return false;
     }
