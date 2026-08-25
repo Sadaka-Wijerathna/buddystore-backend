@@ -141,6 +141,7 @@ model Bot {
   pricePerVideo  Float    @default(5)
   bannerUrl      String? // Cloudinary URL for the category preview
   showPreviews   Boolean  @default(true)
+  badgeOnly      Boolean  @default(false)
   startedUserIds String[] @default([]) // Telegram user IDs that started this bot
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -431,6 +432,7 @@ model SpecialCollection {
   trendingTag    String   @default("Trending")
   collectionMode Boolean  @default(false) // When ON, admin can upload videos
   totalVideos    Int      @default(0)
+  badgeOnly      Boolean  @default(false)
   order          Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

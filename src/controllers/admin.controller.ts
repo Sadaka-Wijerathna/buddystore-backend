@@ -175,14 +175,36 @@ export const toggleCollectionMode = async (req: AuthRequest, res: Response): Pro
   }
 };
 
+// ─── Toggle badge-only flag on a bot ──────────────────────────────────────────
+export const toggleBotBadgeOnly = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { enabled } = req.body;
+
+    const bot = await prisma.bot.update({
+      where: { id },
+      data: { badgeOnly: Boolean(enabled) },
+    });
+
+    res.json({
+      success: true,
+      message: `Badge-only ${bot.badgeOnly ? 'enabled' : 'disabled'} for ${bot.label || bot.name}`,
+      data: { id: bot.id, badgeOnly: bot.badgeOnly },
+    });
+  } catch (error) {
+    console.error('[toggleBotBadgeOnly]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 // ─── Update bot settings (display name, bot handle, min video count, price) ───
 // PATCH /admin/bots/:id/settings  { label?, name?, minVideoCount?, pricePerVideo? }
 export const updateBotSettings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const { label, name, minVideoCount, pricePerVideo, collectVideos, collectPhotos, showPreviews } = req.body;
+    const { label, name, minVideoCount, pricePerVideo, collectVideos, collectPhotos, showPreviews, badgeOnly } = req.body;
 
-    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean; showPreviews?: boolean } = {};
+    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean; showPreviews?: boolean; badgeOnly?: boolean } = {};
 
     if (label !== undefined) {
       if (typeof label !== 'string' || !label.trim()) {
@@ -228,6 +250,10 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
 
     if (showPreviews !== undefined) {
       data.showPreviews = Boolean(showPreviews);
+    }
+
+    if (badgeOnly !== undefined) {
+      data.badgeOnly = Boolean(badgeOnly);
     }
 
     if (Object.keys(data).length === 0) {
@@ -1568,6 +1594,7 @@ export const updateSpecialCollection = async (req: AuthRequest, res: Response): 
     if (keywords !== undefined) data.keywords = keywords;
     if (trendingTag) data.trendingTag = trendingTag;
     if (order !== undefined) data.order = parseInt(String(order), 10);
+    if ((req.body as any).badgeOnly !== undefined) data.badgeOnly = Boolean((req.body as any).badgeOnly);
     
     if (req.file) {
       const filename = `special-${existing.slug}-${Date.now()}`;
@@ -1630,6 +1657,28 @@ export const toggleSpecialCollectionMode = async (req: AuthRequest, res: Respons
     });
   } catch (error) {
     console.error('[toggleSpecialCollectionMode]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// PATCH /admin/special-collections/:id/badge-only  { enabled }
+export const toggleSpecialCollectionBadgeOnly = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { enabled } = req.body;
+
+    const collection = await prisma.specialCollection.update({
+      where: { id },
+      data: { badgeOnly: Boolean(enabled) },
+    });
+
+    res.json({
+      success: true,
+      message: `Badge-only ${collection.badgeOnly ? 'enabled' : 'disabled'} for "${collection.title}"`,
+      data: { id: collection.id, badgeOnly: collection.badgeOnly },
+    });
+  } catch (error) {
+    console.error('[toggleSpecialCollectionBadgeOnly]', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };

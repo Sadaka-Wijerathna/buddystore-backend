@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
+import { hasActiveBadge } from './badge.controller';
 
 // GET /api/v1/public/special-collections
 export const getPublicSpecialCollections = async (_req: Request, res: Response): Promise<void> => {
@@ -21,6 +22,7 @@ export const getPublicSpecialCollections = async (_req: Request, res: Response):
         keywords: c.keywords,
         banner: c.banner,
         totalVideos: c.totalVideos,
+        badgeOnly: c.badgeOnly,
         createdAt: c.createdAt,
       })),
     });
@@ -32,8 +34,11 @@ export const getPublicSpecialCollections = async (_req: Request, res: Response):
 
 // GET /api/v1/public/video-gallery  (requires auth)
 // Returns category cards with the first 50 thumbnails each (for the preview mosaic).
-export const getVideoGallery = async (req: Request, res: Response): Promise<void> => {
+export const getVideoGallery = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const userId = req.user?.id;
+    const isBadgeHolder = userId ? await hasActiveBadge(userId) : false;
+
     const categoriesWithThumbnails = await prisma.videos.groupBy({
       by: ['category'],
       where: { thumbnailUrl: { not: null } },
@@ -41,19 +46,24 @@ export const getVideoGallery = async (req: Request, res: Response): Promise<void
     });
 
     // Build a label map from the bots table so custom categories get the right display name
-    const allBots = await prisma.bot.findMany({ select: { category: true, label: true, bannerUrl: true, showPreviews: true } });
+    const allBots = await prisma.bot.findMany({ select: { category: true, label: true, bannerUrl: true, showPreviews: true, badgeOnly: true } });
     const labelMap: Record<string, string> = {};
     const bannerMap: Record<string, string | null> = {};
     const previewAccessMap: Record<string, boolean> = {};
+    const badgeOnlyMap: Record<string, boolean> = {};
     allBots.forEach(b => {
       labelMap[b.category] = b.label || b.category;
       bannerMap[b.category] = b.bannerUrl;
       previewAccessMap[b.category] = b.showPreviews;
+      badgeOnlyMap[b.category] = b.badgeOnly;
     });
 
     const data = await Promise.all(
       categoriesWithThumbnails.map(async (group) => {
         if (!previewAccessMap[group.category]) return null;
+
+        const isBadgeOnly = badgeOnlyMap[group.category] ?? false;
+        const isLocked = isBadgeOnly && !isBadgeHolder;
 
         const [totalVideos, totalWithThumbnail] = await Promise.all([
           prisma.videos.count({ where: { category: group.category } }),
@@ -76,7 +86,8 @@ export const getVideoGallery = async (req: Request, res: Response): Promise<void
           totalVideos,
           totalWithThumbnail,
           bannerUrl: bannerMap[group.category] ?? null,
-          isLocked: false,
+          isLocked,
+          badgeOnly: isBadgeOnly,
           thumbnails: thumbnailRows.map(r => ({
             url: r.thumbnailUrl as string,
             collectedAt: r.collectedAt.toISOString(),
@@ -108,6 +119,7 @@ export const getPublicCategories = async (_req: Request, res: Response): Promise
         pricePerVideo: true,
         totalVideos: true,
         collectionMode: true,
+        badgeOnly: true,
       },
       orderBy: { category: 'asc' },
     });
@@ -122,6 +134,7 @@ export const getPublicCategories = async (_req: Request, res: Response): Promise
         pricePerVideo: b.pricePerVideo,
         totalVideos: b.totalVideos,
         collectionMode: b.collectionMode,
+        badgeOnly: b.badgeOnly,
       })),
     });
   } catch (error) {
@@ -212,6 +225,7 @@ export const getPublicSpecialCollectionBySlug = async (req: Request, res: Respon
         banner: collection.banner,
         trendingTag: collection.trendingTag,
         totalVideos: collection.totalVideos,
+        badgeOnly: collection.badgeOnly,
         createdAt: collection.createdAt,
       },
     });

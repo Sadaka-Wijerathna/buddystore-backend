@@ -13,6 +13,7 @@ router.use(authenticate, requireAdmin);
 router.get('/bots', adminController.getBots);
 router.post('/bots', requireSuperAdmin, adminController.createBot);
 router.patch('/bots/:id/collection-mode', adminController.toggleCollectionMode);
+router.patch('/bots/:id/badge-only', adminController.toggleBotBadgeOnly);
 router.patch('/bots/:id/settings', adminController.updateBotSettings);
 router.patch('/bots/:id/min-video-count', adminController.updateBotMinVideoCount);
 router.patch('/bots/:id/banner', upload.single('banner'), adminController.updateBotBanner);
@@ -26,6 +27,7 @@ router.post('/special-collections', upload.single('banner'), adminController.cre
 router.patch('/special-collections/reorder', adminController.reorderSpecialCollections);
 router.patch('/special-collections/:id', upload.single('banner'), adminController.updateSpecialCollection);
 router.patch('/special-collections/:id/collection-mode', adminController.toggleSpecialCollectionMode);
+router.patch('/special-collections/:id/badge-only', adminController.toggleSpecialCollectionBadgeOnly);
 router.delete('/special-collections/:id/videos', adminController.clearSpecialCollectionVideos);
 router.delete('/special-collections/:id', adminController.deleteSpecialCollection);
 
