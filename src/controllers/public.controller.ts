@@ -39,66 +39,90 @@ export const getVideoGallery = async (req: AuthRequest, res: Response): Promise<
     const userId = req.user?.id;
     const isBadgeHolder = userId ? await hasActiveBadge(userId) : false;
 
-    const categoriesWithThumbnails = await prisma.videos.groupBy({
-      by: ['category'],
-      where: { thumbnailUrl: { not: null } },
-      _count: { fileId: true },
-    });
+    // ── 4 queries total, regardless of category count (was 3N+2) ─────────────
 
-    // Build a label map from the bots table so custom categories get the right display name
-    const allBots = await prisma.bot.findMany({ select: { category: true, label: true, bannerUrl: true, showPreviews: true, badgeOnly: true } });
+    // 1. All bots metadata (labels, banners, access flags)
+    const allBots = await prisma.bot.findMany({
+      select: { category: true, label: true, bannerUrl: true, showPreviews: true, badgeOnly: true },
+    });
     const labelMap: Record<string, string> = {};
     const bannerMap: Record<string, string | null> = {};
     const previewAccessMap: Record<string, boolean> = {};
     const badgeOnlyMap: Record<string, boolean> = {};
     allBots.forEach(b => {
-      labelMap[b.category] = b.label || b.category;
-      bannerMap[b.category] = b.bannerUrl;
+      labelMap[b.category]       = b.label || b.category;
+      bannerMap[b.category]      = b.bannerUrl;
       previewAccessMap[b.category] = b.showPreviews;
-      badgeOnlyMap[b.category] = b.badgeOnly;
+      badgeOnlyMap[b.category]   = b.badgeOnly;
     });
 
-    const data = await Promise.all(
-      categoriesWithThumbnails.map(async (group) => {
-        if (!previewAccessMap[group.category]) return null;
+    // 2. Total video count per category (single groupBy — no per-category queries)
+    const totalCountRows = await prisma.videos.groupBy({
+      by: ['category'],
+      _count: { id: true },
+    });
+    const totalCountMap: Record<string, number> = {};
+    totalCountRows.forEach(r => { totalCountMap[r.category] = r._count.id; });
 
-        const isBadgeOnly = badgeOnlyMap[group.category] ?? false;
-        const isLocked = isBadgeOnly && !isBadgeHolder;
+    // 3. Thumbnail count per category (single groupBy — replaces N count() calls)
+    const thumbCountRows = await prisma.videos.groupBy({
+      by: ['category'],
+      where: { thumbnailUrl: { not: null } },
+      _count: { id: true },
+    });
+    const thumbCountMap: Record<string, number> = {};
+    const categoriesWithThumbs = new Set<string>();
+    thumbCountRows.forEach(r => {
+      thumbCountMap[r.category] = r._count.id;
+      categoriesWithThumbs.add(r.category);
+    });
 
-        const [totalVideos, totalWithThumbnail] = await Promise.all([
-          prisma.videos.count({ where: { category: group.category } }),
-          prisma.videos.count({ where: { category: group.category, thumbnailUrl: { not: null } } }),
-        ]);
+    // 4. Bulk-fetch the latest 50 thumbnails for ALL categories in one query,
+    //    then group them in JS — replaces N findMany() calls
+    const allThumbnails = await prisma.videos.findMany({
+      where: {
+        category: { in: [...categoriesWithThumbs] },
+        thumbnailUrl: { not: null },
+      },
+      select: { category: true, thumbnailUrl: true, collectedAt: true },
+      orderBy: { collectedAt: 'desc' },
+    });
 
-        const thumbnailRows = await prisma.videos.findMany({
-          where: { category: group.category, thumbnailUrl: { not: null } },
-          select: { thumbnailUrl: true, collectedAt: true },
-          take: 50,
-          orderBy: { collectedAt: 'desc' },
+    // Group thumbnails by category, keeping only the first 50 per category
+    const thumbsByCategory: Record<string, { url: string; collectedAt: string }[]> = {};
+    for (const row of allThumbnails) {
+      if (!thumbsByCategory[row.category]) thumbsByCategory[row.category] = [];
+      if (thumbsByCategory[row.category].length < 50) {
+        thumbsByCategory[row.category].push({
+          url: row.thumbnailUrl as string,
+          collectedAt: row.collectedAt.toISOString(),
         });
+      }
+    }
 
-        // If zero actual thumbnails exist, skip this category entirely
-        if (thumbnailRows.length === 0) return null;
-
-        return {
-          category: group.category,
-          label: labelMap[group.category] ?? group.category,
-          totalVideos,
-          totalWithThumbnail,
-          bannerUrl: bannerMap[group.category] ?? null,
-          isLocked,
-          badgeOnly: isBadgeOnly,
-          thumbnails: thumbnailRows.map(r => ({
-            url: r.thumbnailUrl as string,
-            collectedAt: r.collectedAt.toISOString(),
-          })),
-        };
+    // ── Assemble response ─────────────────────────────────────────────────────
+    const data = [...categoriesWithThumbs]
+      .filter(category => {
+        // Skip categories with no previews allowed or no thumbnails loaded
+        if (!previewAccessMap[category]) return false;
+        const thumbs = thumbsByCategory[category];
+        return thumbs && thumbs.length > 0;
       })
-    );
+      .map(category => {
+        const isBadgeOnly = badgeOnlyMap[category] ?? false;
+        return {
+          category,
+          label: labelMap[category] ?? category,
+          totalVideos: totalCountMap[category] ?? 0,
+          totalWithThumbnail: thumbCountMap[category] ?? 0,
+          bannerUrl: bannerMap[category] ?? null,
+          isLocked: isBadgeOnly && !isBadgeHolder,
+          badgeOnly: isBadgeOnly,
+          thumbnails: thumbsByCategory[category] ?? [],
+        };
+      });
 
-    // Remove any nulls (categories with no thumbnails)
-    const filtered = data.filter(Boolean);
-    res.json({ success: true, data: filtered });
+    res.json({ success: true, data });
   } catch (error) {
     console.error('[getVideoGallery]', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -124,6 +148,8 @@ export const getPublicCategories = async (_req: Request, res: Response): Promise
       orderBy: { category: 'asc' },
     });
 
+    // Categories change only when an admin adds/edits a bot — safe to cache for 5 minutes.
+    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
     res.json({
       success: true,
       data: bots.map(b => ({
@@ -195,6 +221,8 @@ export const getPublicBankAccounts = async (_req: Request, res: Response): Promi
       orderBy: { order: 'asc' },
     });
 
+    // Bank accounts change rarely — safe to cache for 5 minutes.
+    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
     res.json({ success: true, data: accounts });
   } catch (error) {
     console.error('[getPublicBankAccounts]', error);
@@ -215,6 +243,8 @@ export const getPublicSpecialCollectionBySlug = async (req: Request, res: Respon
       return;
     }
 
+    // Collection metadata changes only when admin edits it — safe to cache for 2 minutes.
+    res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
     res.json({
       success: true,
       data: {
@@ -250,6 +280,8 @@ export const getPublicSettings = async (_req: Request, res: Response): Promise<v
       map['TRENDING_BOT_USERNAME'] = 'BuddySpecial1Bot';
     }
 
+    // Settings rarely change — safe to cache for 5 minutes.
+    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
     res.json({ success: true, data: map });
   } catch (error) {
     console.error('[getPublicSettings]', error);

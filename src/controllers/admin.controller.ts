@@ -1323,74 +1323,251 @@ export const adminPlaceOrder = async (req: AuthRequest, res: Response): Promise<
 // ─── Analytics ────────────────────────────────────────────────────────────
 export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const orders = await prisma.order.findMany({
-      where: { status: { not: 'REJECTED' } },
-      select: {
-        status: true,
-        category: true,
-        priceAmount: true,
-        videoCount: true,
-        receiptUrl: true,
-        createdAt: true,
-      },
+    const now = new Date();
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo    = new Date(now.getTime() -  7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo   = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const todayStart      = new Date(now); todayStart.setHours(0, 0, 0, 0);
+
+    // ── All aggregations pushed to Postgres — no full table scan in Node.js ──
+
+    const [
+      dailyRevenueRaw,
+      statusBreakdownRaw,
+      categoryBreakdownRaw,
+      totalRevenueRaw,
+      weeklyCountRaw,
+      paymentMethodRaw,
+      userStatsRaw,
+      signupTrendRaw,
+      topSpendersRaw,
+      topVideoBuyersRaw,
+      deliveryHealthRaw,
+      badgeStatsRaw,
+      todayRaw,
+    ] = await Promise.all([
+
+      // 1. Daily revenue for the last 14 days
+      prisma.$queryRaw<{ date: string; revenue: number; orders: bigint }[]>`
+        SELECT
+          TO_CHAR("createdAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
+          COALESCE(SUM("priceAmount"), 0)::float                 AS revenue,
+          COUNT(*)                                               AS orders
+        FROM orders
+        WHERE status != 'REJECTED'
+          AND "createdAt" >= ${fourteenDaysAgo}
+        GROUP BY date
+        ORDER BY date ASC
+      `,
+
+      // 2. Status breakdown
+      prisma.order.groupBy({ by: ['status'], _count: { id: true } }),
+
+      // 3. Category breakdown
+      prisma.$queryRaw<{ category: string; orders: bigint; revenue: number; videos: bigint }[]>`
+        SELECT
+          category,
+          COUNT(*)                                                                              AS orders,
+          COALESCE(SUM(CASE WHEN status != 'REJECTED' THEN "priceAmount" ELSE 0 END), 0)::float AS revenue,
+          COALESCE(SUM("videoCount"), 0)                                                        AS videos
+        FROM orders
+        GROUP BY category
+        ORDER BY revenue DESC
+      `,
+
+      // 4. Total revenue + batch counts
+      prisma.$queryRaw<{ total_revenue: number; active_batches: bigint; completed_batches: bigint; revenue_batches: bigint }[]>`
+        SELECT
+          COALESCE(SUM(CASE WHEN status IN ('CONFIRMED','DELIVERING','COMPLETED') THEN "priceAmount" ELSE 0 END), 0)::float AS total_revenue,
+          COUNT(DISTINCT CASE WHEN status != 'REJECTED' THEN CONCAT(COALESCE("receiptUrl",'no-receipt'), '_', FLOOR(EXTRACT(EPOCH FROM "createdAt")/5)::text) END) AS active_batches,
+          COUNT(DISTINCT CASE WHEN status = 'COMPLETED' THEN CONCAT(COALESCE("receiptUrl",'no-receipt'), '_', FLOOR(EXTRACT(EPOCH FROM "createdAt")/5)::text) END) AS completed_batches,
+          COUNT(DISTINCT CASE WHEN status IN ('CONFIRMED','DELIVERING','COMPLETED') THEN CONCAT(COALESCE("receiptUrl",'no-receipt'), '_', FLOOR(EXTRACT(EPOCH FROM "createdAt")/5)::text) END) AS revenue_batches
+        FROM orders
+      `,
+
+      // 5. Weekly batch count
+      prisma.$queryRaw<{ weekly_batches: bigint }[]>`
+        SELECT COUNT(DISTINCT CONCAT(COALESCE("receiptUrl",'no-receipt'), '_', FLOOR(EXTRACT(EPOCH FROM "createdAt")/5)::text)) AS weekly_batches
+        FROM orders
+        WHERE status != 'REJECTED' AND "createdAt" >= ${sevenDaysAgo}
+      `,
+
+      // 6. Payment method breakdown
+      prisma.$queryRaw<{ method: string; count: bigint; revenue: number }[]>`
+        SELECT
+          "paymentMethod"                                                                        AS method,
+          COUNT(*)                                                                              AS count,
+          COALESCE(SUM(CASE WHEN status != 'REJECTED' THEN "priceAmount" ELSE 0 END), 0)::float AS revenue
+        FROM orders
+        GROUP BY "paymentMethod"
+        ORDER BY count DESC
+      `,
+
+      // 7. User stats: total, active (ordered in 30d), badge holders
+      prisma.$queryRaw<{ total_users: bigint; active_users: bigint; badge_holders: bigint }[]>`
+        SELECT
+          (SELECT COUNT(*) FROM users)                                                  AS total_users,
+          (SELECT COUNT(DISTINCT "userId") FROM orders WHERE "createdAt" >= ${thirtyDaysAgo}) AS active_users,
+          (SELECT COUNT(*) FROM super_badges WHERE status = 'ACTIVE')                  AS badge_holders
+      `,
+
+      // 8. New signups per day — last 14 days
+      prisma.$queryRaw<{ date: string; signups: bigint }[]>`
+        SELECT
+          TO_CHAR("createdAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
+          COUNT(*) AS signups
+        FROM users
+        WHERE "createdAt" >= ${fourteenDaysAgo}
+        GROUP BY date
+        ORDER BY date ASC
+      `,
+
+      // 9. Top 10 spenders
+      prisma.$queryRaw<{ userId: string; username: string; firstName: string; totalSpent: number; orderCount: bigint }[]>`
+        SELECT
+          o."userId",
+          u."telegramUsername" AS username,
+          u."firstName",
+          COALESCE(SUM(CASE WHEN o.status != 'REJECTED' THEN o."priceAmount" ELSE 0 END), 0)::float AS "totalSpent",
+          COUNT(*) AS "orderCount"
+        FROM orders o
+        JOIN users u ON u.id = o."userId"
+        GROUP BY o."userId", u."telegramUsername", u."firstName"
+        ORDER BY "totalSpent" DESC
+        LIMIT 10
+      `,
+
+      // 10. Top 10 video buyers
+      prisma.$queryRaw<{ userId: string; username: string; firstName: string; totalVideos: bigint; orderCount: bigint }[]>`
+        SELECT
+          o."userId",
+          u."telegramUsername" AS username,
+          u."firstName",
+          COALESCE(SUM(o."videoCount"), 0) AS "totalVideos",
+          COUNT(*) AS "orderCount"
+        FROM orders o
+        JOIN users u ON u.id = o."userId"
+        WHERE o.status != 'REJECTED'
+        GROUP BY o."userId", u."telegramUsername", u."firstName"
+        ORDER BY "totalVideos" DESC
+        LIMIT 10
+      `,
+
+      // 11. Delivery job health
+      prisma.$queryRaw<{ status: string; count: bigint }[]>`
+        SELECT status, COUNT(*) AS count
+        FROM video_delivery_jobs
+        GROUP BY status
+      `,
+
+      // 12. Super Badge stats: active count, total revenue, plan distribution
+      prisma.$queryRaw<{ plan_name: string; count: bigint; revenue: number }[]>`
+        SELECT
+          p.name AS plan_name,
+          COUNT(b.id) AS count,
+          COALESCE(SUM(p.price), 0)::float AS revenue
+        FROM super_badges b
+        JOIN super_badge_plans p ON p.id = b."planId"
+        WHERE b.status = 'ACTIVE'
+        GROUP BY p.name, p."durationDays"
+        ORDER BY p."durationDays" ASC
+      `,
+
+      // 13. Today's revenue + orders
+      prisma.$queryRaw<{ today_revenue: number; today_orders: bigint }[]>`
+        SELECT
+          COALESCE(SUM(CASE WHEN status != 'REJECTED' THEN "priceAmount" ELSE 0 END), 0)::float AS today_revenue,
+          COUNT(*) AS today_orders
+        FROM orders
+        WHERE "createdAt" >= ${todayStart}
+      `,
+    ]);
+
+    // ── Shape responses ───────────────────────────────────────────────────────
+
+    // Daily revenue (14-day, fill gaps)
+    const dailyMap: Record<string, { revenue: number; orders: number }> = {};
+    for (const row of dailyRevenueRaw) {
+      dailyMap[row.date] = { revenue: Number(row.revenue), orders: Number(row.orders) };
+    }
+    const dailyRevenue = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date(now); d.setDate(d.getDate() - (13 - i));
+      const dateStr = d.toISOString().slice(0, 10);
+      return { date: dateStr, ...(dailyMap[dateStr] ?? { revenue: 0, orders: 0 }) };
     });
 
-    const countBatches = (ordersList: typeof orders) => {
-      const groups = new Set<string>();
-      for (const o of ordersList) {
-        const timeKey = Math.floor(new Date(o.createdAt).getTime() / 5000);
-        const key = `${o.receiptUrl || 'no-receipt'}_${timeKey}`;
-        groups.add(key);
-      }
-      return groups.size;
+    const statusBreakdown: Record<string, number> = {};
+    for (const row of statusBreakdownRaw) statusBreakdown[row.status] = row._count.id;
+
+    const categoryBreakdown = categoryBreakdownRaw.map(r => ({
+      category: r.category,
+      orders:   Number(r.orders),
+      revenue:  Number(r.revenue),
+      videos:   Number(r.videos),
+    }));
+
+    const stats            = totalRevenueRaw[0];
+    const totalRevenue     = Number(stats?.total_revenue ?? 0);
+    const activeBatches    = Number(stats?.active_batches    ?? 0);
+    const completedBatches = Number(stats?.completed_batches ?? 0);
+    const revenueBatches   = Number(stats?.revenue_batches   ?? 0);
+    const weeklyOrders     = Number(weeklyCountRaw[0]?.weekly_batches ?? 0);
+
+    const paymentMethods = paymentMethodRaw.map(r => ({
+      method:  r.method,
+      count:   Number(r.count),
+      revenue: Number(r.revenue),
+    }));
+
+    const userRow   = userStatsRaw[0];
+    const userStats = {
+      totalUsers:   Number(userRow?.total_users   ?? 0),
+      activeUsers:  Number(userRow?.active_users  ?? 0),
+      badgeHolders: Number(userRow?.badge_holders ?? 0),
     };
 
-    // Daily revenue — last 14 days
-    const now = new Date();
-    const dailyRevenue: { date: string; revenue: number; orders: number }[] = [];
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(d.getDate() - i);
+    // Signup trend (14-day, fill gaps)
+    const signupMap: Record<string, number> = {};
+    for (const row of signupTrendRaw) signupMap[row.date] = Number(row.signups);
+    const signupTrend = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date(now); d.setDate(d.getDate() - (13 - i));
       const dateStr = d.toISOString().slice(0, 10);
-      const dayOrders = orders.filter(o => {
-        const created = new Date(o.createdAt).toISOString().slice(0, 10);
-        return created === dateStr && o.status !== 'REJECTED';
-      });
-      dailyRevenue.push({
-        date: dateStr,
-        revenue: dayOrders.reduce((s, o) => s + Number(o.priceAmount), 0),
-        orders: countBatches(dayOrders),
-      });
-    }
+      return { date: dateStr, signups: signupMap[dateStr] ?? 0 };
+    });
 
-    // Status breakdown
-    const statusBreakdown: Record<string, number> = {};
-    for (const o of orders) {
-      statusBreakdown[o.status] = (statusBreakdown[o.status] ?? 0) + 1;
-    }
+    const topSpenders = topSpendersRaw.map(r => ({
+      userId:     r.userId,
+      username:   r.username,
+      firstName:  r.firstName,
+      totalSpent: Number(r.totalSpent),
+      orderCount: Number(r.orderCount),
+    }));
 
-    // Category breakdown
-    const catMap: Record<string, { orders: number; revenue: number; videos: number }> = {};
-    for (const o of orders) {
-      if (!catMap[o.category]) catMap[o.category] = { orders: 0, revenue: 0, videos: 0 };
-      catMap[o.category].orders++;
-      catMap[o.category].videos += o.videoCount;
-      if (o.status !== 'REJECTED') catMap[o.category].revenue += Number(o.priceAmount);
-    }
-    const categoryBreakdown = Object.entries(catMap).map(([category, stats]) => ({
-      category,
-      ...stats,
-    })).sort((a, b) => b.revenue - a.revenue);
+    const topVideoBuyers = topVideoBuyersRaw.map(r => ({
+      userId:      r.userId,
+      username:    r.username,
+      firstName:   r.firstName,
+      totalVideos: Number(r.totalVideos),
+      orderCount:  Number(r.orderCount),
+    }));
 
-    // Top stats
-    const revenueOrders = orders.filter(o => ['CONFIRMED', 'DELIVERING', 'COMPLETED'].includes(o.status));
-    const activeOrders  = orders.filter(o => o.status !== 'REJECTED');
-    const totalRevenue  = revenueOrders.reduce((s, o) => s + Number(o.priceAmount), 0);
-    
-    const activeBatchesCount = countBatches(activeOrders);
-    const completedBatchesCount = countBatches(orders.filter(o => o.status === 'COMPLETED'));
-    const weekAgo       = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const weeklyOrdersList = activeOrders.filter(o => new Date(o.createdAt) >= weekAgo);
+    const deliveryHealth: Record<string, number> = {};
+    for (const row of deliveryHealthRaw) deliveryHealth[row.status] = Number(row.count);
+    const totalJobs     = Object.values(deliveryHealth).reduce((a, b) => a + b, 0);
+    const completedJobs = deliveryHealth['COMPLETED'] ?? 0;
+
+    const badgePlans = badgeStatsRaw.map(r => ({
+      planName: r.plan_name,
+      count:    Number(r.count),
+      revenue:  Number(r.revenue),
+    }));
+    const totalBadgeRevenue = badgePlans.reduce((s, r) => s + r.revenue, 0);
+
+    const todayRow    = todayRaw[0];
+    const todayStats  = {
+      revenue: Number(todayRow?.today_revenue ?? 0),
+      orders:  Number(todayRow?.today_orders  ?? 0),
+    };
 
     res.json({
       success: true,
@@ -1400,11 +1577,27 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
         categoryBreakdown,
         topStats: {
           totalRevenue,
-          totalOrders: activeBatchesCount,
-          avgOrderValue: countBatches(revenueOrders) ? Math.round(totalRevenue / countBatches(revenueOrders)) : 0,
-          completionRate: activeBatchesCount ? Math.round((completedBatchesCount / activeBatchesCount) * 100) : 0,
-          weeklyOrders: countBatches(weeklyOrdersList),
+          totalOrders:    activeBatches,
+          avgOrderValue:  revenueBatches ? Math.round(totalRevenue / revenueBatches) : 0,
+          completionRate: activeBatches  ? Math.round((completedBatches / activeBatches) * 100) : 0,
+          weeklyOrders,
         },
+        paymentMethods,
+        userStats,
+        signupTrend,
+        topSpenders,
+        topVideoBuyers,
+        deliveryHealth: {
+          ...deliveryHealth,
+          successRate: totalJobs ? Math.round((completedJobs / totalJobs) * 100) : 0,
+          totalJobs,
+        },
+        badgeStats: {
+          plans:        badgePlans,
+          totalRevenue: totalBadgeRevenue,
+          activeHolders: userStats.badgeHolders,
+        },
+        todayStats,
       },
     });
   } catch (error) {
@@ -1412,7 +1605,6 @@ export const getAnalytics = async (_req: AuthRequest, res: Response): Promise<vo
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
-
 
 // ─── Delete a single order ───────────────────────────────────────────────────
 export const deleteOrder = async (req: AuthRequest, res: Response): Promise<void> => {

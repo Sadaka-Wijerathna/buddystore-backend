@@ -144,12 +144,13 @@ export const createOrder = async (req: AuthRequest, res: Response): Promise<void
 
     const bot = categoryBot;
 
-    const availableVideos = await prisma.videos.count({
-      where: {
-        category: String(category),
-        videoDeliveries: { none: { userId } },
-      },
-    });
+    // Fast availability check: total minus already received.
+    // Avoids a correlated NOT-EXISTS subquery (full table scan) on video_deliveries.
+    const [totalVideos, alreadyReceived] = await Promise.all([
+      prisma.videos.count({ where: { category: String(category) } }),
+      prisma.videoDelivery.count({ where: { userId, video: { category: String(category) } } }),
+    ]);
+    const availableVideos = Math.max(0, totalVideos - alreadyReceived);
 
     if (availableVideos < count) {
       res.status(400).json({
