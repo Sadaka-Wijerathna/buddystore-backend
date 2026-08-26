@@ -166,6 +166,7 @@ model BotVerifyToken {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, category, verified]) // checkout: find existing verified token per category
   @@map("bot_verify_tokens")
 }
 
@@ -202,6 +203,8 @@ model Videos {
   videoDeliveries VideoDelivery[]
 
   @@index([category, collectedAt])
+  @@index([category, thumbnailUrl])  // gallery: filter by category + non-null thumbnail
+  @@index([botId])                   // bot video counts
   @@index([fileSize, duration])
   @@map("videos")
 }
@@ -237,6 +240,9 @@ model Order {
   videoDeliveryJobs VideoDeliveryJob[]
   review            Review?
 
+  @@index([userId])               // getMyOrders, getUserOrders
+  @@index([status, createdAt])    // getAllOrders filter + getAnalytics date range
+  @@index([receiptUrl])           // confirmOrdersByReceipt, deleteOrder by receipt
   @@map("orders")
 }
 
@@ -271,7 +277,9 @@ model VideoDelivery {
   video Videos @relation(fields: [videoId], references: [id])
   user  User   @relation(fields: [userId], references: [id])
 
-  @@unique([videoId, userId]) // A video can only be sent once per user
+  @@unique([videoId, userId])     // A video can only be sent once per user
+  @@index([userId])               // availability count: how many videos user already received
+  @@index([orderId])              // delivery progress per order
   @@map("video_deliveries")
 }
 
@@ -299,6 +307,8 @@ model VideoDeliveryJob {
   order Order @relation(fields: [orderId], references: [id])
   user  User  @relation(fields: [userId], references: [id])
 
+  @@index([status, createdAt])    // worker: poll for PENDING jobs
+  @@index([orderId])              // duplicate job guard + progress check
   @@map("video_delivery_jobs")
 }
 

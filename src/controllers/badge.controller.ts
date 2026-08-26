@@ -43,6 +43,8 @@ export const getBadgePlans = async (_req: Request, res: Response): Promise<void>
         order: true,
       },
     });
+    // Plans change only when admin adds/edits one — safe to cache for 5 minutes.
+    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
     res.json({ success: true, data: plans });
   } catch (error) {
     console.error('[getBadgePlans]', error);
