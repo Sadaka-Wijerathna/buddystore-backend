@@ -27,6 +27,12 @@ import { authenticate } from './middleware/auth.middleware';
 
 const app = express();
 
+// ─── Reverse Proxy Trust ──────────────────────────────────────────────────────
+// Render (and most PaaS providers) sit behind a load balancer that sets
+// X-Forwarded-For. Without this, express-rate-limit cannot identify the real
+// client IP and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+app.set('trust proxy', 1);
+
 app.disable('x-powered-by');
 
 // ─── Core Middleware ──────────────────────────────────────────────────────────

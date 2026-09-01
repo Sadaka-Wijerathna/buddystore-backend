@@ -478,6 +478,15 @@ export class CategoryBot {
             );
           }
 
+          // ── MEDIA_FILE_INVALID: file_id belongs to a different bot token ──
+          // Telegram file_ids are bot-specific. If a video was uploaded through
+          // a different bot, this bot can never send it — retrying is useless.
+          // Skip immediately so we don't burn 3 attempts × 2s delay per video.
+          if (description.includes('MEDIA_FILE_INVALID') || description.includes('wrong file identifier')) {
+            console.warn(`[${this.name}] Skipping video ${fileId.slice(0, 16)}… — MEDIA_FILE_INVALID (file_id from a different bot token)`);
+            return false;
+          }
+
           if (errorCode === 429) {
             const retryAfterSec: number = error?.parameters?.retry_after ?? 10;
             console.warn(`[${this.name}] Rate limited (429). Waiting ${retryAfterSec}s before retry...`);
