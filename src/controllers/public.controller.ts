@@ -24,6 +24,7 @@ export const getPublicSpecialCollections = async (_req: Request, res: Response):
         totalVideos: c.totalVideos,
         badgeOnly: c.badgeOnly,
         createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
       })),
     });
   } catch (error) {
