@@ -3,18 +3,34 @@ import prisma from '../lib/prisma';
 import { uploadReceipt } from '../lib/cloudinary';
 import { dispatchNotification } from './notification.controller';
 import { resolveTgFileUrl } from './auth.controller';
+import { AuthRequest } from '../middleware/auth.middleware';
+import { getIO } from '../lib/socket';
 
-interface AuthRequest extends Request {
-  user?: { id: string; role: string; adminRole?: string };
+// ─── In-memory TTL cache for hasActiveBadge ───────────────────────────────────
+// Avoids a DB round-trip on every page load for authenticated users.
+// Badge status changes at most once per day; 60-second TTL is plenty.
+interface BadgeCacheEntry { value: boolean; expiresAt: number; }
+const badgeCache = new Map<string, BadgeCacheEntry>();
+const BADGE_CACHE_TTL_MS = 60_000; // 60 seconds
+
+/** Invalidate the cache for a specific user (call after any badge mutation). */
+export function invalidateBadgeCache(userId: string): void {
+  badgeCache.delete(userId);
 }
 
 // ─── Helper: check if a user has an active badge ─────────────────────────────
 export async function hasActiveBadge(userId: string): Promise<boolean> {
+  const now = Date.now();
+  const cached = badgeCache.get(userId);
+  if (cached && cached.expiresAt > now) return cached.value;
+
   const badge = await prisma.superBadge.findUnique({
     where: { userId },
     select: { status: true, expiresAt: true },
   });
-  return badge?.status === 'ACTIVE' && badge.expiresAt > new Date();
+  const value = badge?.status === 'ACTIVE' && badge.expiresAt > new Date();
+  badgeCache.set(userId, { value, expiresAt: now + BADGE_CACHE_TTL_MS });
+  return value;
 }
 
 // ─── Activate a badge (status only — wallet is NOT modified) ─────────────────
@@ -220,6 +236,17 @@ export const purchaseBadge = async (req: AuthRequest, res: Response): Promise<vo
         `Your Super Badge is now active until ${expiresAt.toLocaleDateString()}. Enjoy unlimited previews & saveable videos!`
       );
 
+      // Invalidate cache so the next hasActiveBadge call hits the DB
+      invalidateBadgeCache(userId);
+
+      // Notify the user's browser via Socket.io so polling can stop immediately
+      try {
+        getIO().to(`user:${userId}`).emit('badge:activated', {
+          status: 'ACTIVE',
+          expiresAt: expiresAt.toISOString(),
+        });
+      } catch { /* socket not initialized — safe to ignore */ }
+
       res.json({
         success: true,
         message: existingBadge ? 'Super Badge extended successfully' : 'Super Badge activated!',
@@ -330,12 +357,23 @@ export const adminConfirmBadge = async (req: AuthRequest, res: Response): Promis
 
     await activateBadge(badgeId, badge.userId);
 
+    // Invalidate cache immediately so the next request sees ACTIVE
+    invalidateBadgeCache(badge.userId);
+
     await dispatchNotification(
       badge.userId,
       'badge_activated',
       '🏅 Super Badge Activated!',
       `Your Super Badge payment was confirmed! Badge active until ${expiresAt.toLocaleDateString()}. Enjoy unlimited previews & saveable videos!`
     );
+
+    // Push real-time event so the frontend stops polling immediately
+    try {
+      getIO().to(`user:${badge.userId}`).emit('badge:activated', {
+        status: 'ACTIVE',
+        expiresAt: expiresAt.toISOString(),
+      });
+    } catch { /* socket not initialized — safe to ignore */ }
 
     res.json({
       success: true,
@@ -373,6 +411,9 @@ export const adminRejectBadge = async (req: AuthRequest, res: Response): Promise
 
     await prisma.superBadge.delete({ where: { id: badgeId } });
 
+    // Clear cache — badge is gone
+    invalidateBadgeCache(badge.userId);
+
     await dispatchNotification(
       badge.userId,
       'badge_rejected',
@@ -403,6 +444,9 @@ export const adminDeleteBadgeHolder = async (req: AuthRequest, res: Response): P
 
     await prisma.superBadge.delete({ where: { id } });
 
+    // Clear cache — badge is gone
+    invalidateBadgeCache(badge.userId);
+
     res.json({ success: true, message: 'Badge revoked and deleted' });
   } catch (error) {
     console.error('[adminDeleteBadgeHolder]', error);
@@ -428,7 +472,7 @@ export const adminListBadges = async (_req: Request, res: Response): Promise<voi
       ...badge,
       user: {
         ...badge.user,
-        photoUrl: await resolveTgFileUrl(badge.user.photoUrl || null)
+        photoUrl: await resolveTgFileUrl(badge.user.photoUrl || null, badge.user.id)
       }
     })));
 

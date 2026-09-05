@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { OrderStatus, AuditAction } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { getIO } from '../lib/socket';
 import { videoDeliveryQueue } from '../jobs/video.queue';
 import { uploadBanner, deleteCloudinaryImages, uploadMedia } from '../lib/cloudinary';
 import { mainBot } from '../bots/main.bot';
@@ -509,7 +510,7 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
         _count: { orders: groups.size },
         telegramId: rest.telegramId ? rest.telegramId.toString() : null,
         ipFlagged: !!(rest.lastIpAddress && bannedIpSet.has(rest.lastIpAddress)),
-        photoUrl: await resolveTgFileUrl(rest.photoUrl || null),
+        photoUrl: await resolveTgFileUrl(rest.photoUrl || null, rest.id),
       };
     }));
 
@@ -591,7 +592,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response): Promise<voi
       data: await Promise.all(orders.map(async (order) => ({
         id: order.id,
         user: order.user
-          ? { ...order.user, photoUrl: await resolveTgFileUrl(order.user.photoUrl || null) }
+          ? { ...order.user, photoUrl: await resolveTgFileUrl(order.user.photoUrl || null, order.user.id) }
           : null,
         category: order.category,
         videoCount: order.videoCount,
@@ -643,6 +644,11 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response): Promis
         confirmedAt: status === 'CONFIRMED' ? new Date() : undefined,
       },
     });
+
+    // Notify the user's order page in real time (replaces their 5-second poll)
+    try {
+      getIO().to(`order:${id}`).emit('order:status', { orderId: id, status });
+    } catch { /* socket not initialized in tests — safe to ignore */ }
 
     // If confirmed, enqueue the video delivery job
     if (status === 'CONFIRMED') {
@@ -928,7 +934,7 @@ export const getUserOrders = async (req: AuthRequest, res: Response): Promise<vo
     res.json({
       success: true,
       data: {
-        user: { ...user, photoUrl: await resolveTgFileUrl(user.photoUrl || null) },
+        user: { ...user, photoUrl: await resolveTgFileUrl(user.photoUrl || null, user.id) },
         orders: orders.map(o => ({
           id: o.id,
           category: o.category,

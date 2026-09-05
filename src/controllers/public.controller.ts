@@ -78,8 +78,10 @@ export const getVideoGallery = async (req: AuthRequest, res: Response): Promise<
       categoriesWithThumbs.add(r.category);
     });
 
-    // 4. Bulk-fetch the latest 50 thumbnails for ALL categories in one query,
-    //    then group them in JS — replaces N findMany() calls
+    // 4. Bulk-fetch the latest thumbnails for ALL categories in one query,
+    //    then group them in JS — replaces N findMany() calls.
+    //    Cap at 50 per category × category count so we never load the full table.
+    const THUMBS_PER_CATEGORY = 50;
     const allThumbnails = await prisma.videos.findMany({
       where: {
         category: { in: [...categoriesWithThumbs] },
@@ -87,6 +89,7 @@ export const getVideoGallery = async (req: AuthRequest, res: Response): Promise<
       },
       select: { category: true, thumbnailUrl: true, collectedAt: true },
       orderBy: { collectedAt: 'desc' },
+      take: categoriesWithThumbs.size * THUMBS_PER_CATEGORY,
     });
 
     // Group thumbnails by category, keeping only the first 50 per category

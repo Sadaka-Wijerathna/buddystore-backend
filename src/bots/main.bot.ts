@@ -3,7 +3,7 @@ import config from '../config';
 import prisma from '../lib/prisma';
 import { videoDeliveryQueue } from '../jobs/video.queue';
 import bcrypt from 'bcryptjs';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 // Main bot instance — exported so auth controller and webhook router can use it
 export const mainBot = new Bot(config.bots.main);
@@ -103,7 +103,7 @@ mainBot.use(async (ctx, next) => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     const tempPassword = 'BStore_' + Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
     const passwordHash = await bcrypt.hash(tempPassword, 12);
-    const referralCode = uuidv4().split('-')[0].toUpperCase();
+    const referralCode = randomUUID().split('-')[0].toUpperCase();
 
     try {
       await prisma.user.create({
