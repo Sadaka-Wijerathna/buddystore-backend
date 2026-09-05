@@ -1,11 +1,5 @@
 import express from 'express';
 
-// ─── BigInt Serialization Fix ────────────────────────────────────────────────
-// Prisma returns BigInt for telegramId, which JSON.stringify doesn't support by default.
-(BigInt.prototype as any).toJSON = function () {
-  return this.toString();
-};
-
 import helmet from 'helmet';
 import cors from 'cors';
 import path from 'path';

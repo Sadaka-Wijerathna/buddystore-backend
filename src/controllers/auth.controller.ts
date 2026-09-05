@@ -1,8 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
-import { randomInt } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import prisma from '../lib/prisma';
 import config from '../config';
 import { dispatchNotification } from './notification.controller';
@@ -117,17 +116,26 @@ export async function syncTelegramProfile(telegramId: bigint | string): Promise<
  * Resolve a stored `tg-file:<fileId>` to a real Telegram CDN URL server-side.
  * Returns null if resolution fails or the URL is not a tg-file: reference.
  */
-export async function resolveTgFileUrl(raw: string | null): Promise<string | null> {
+export async function resolveTgFileUrl(
+  raw: string | null,
+  persistToUserId?: string,
+): Promise<string | null> {
   if (!raw) return null;
-  if (!raw.startsWith('tg-file:')) return raw; // already a real URL
+  if (!raw.startsWith('tg-file:')) return raw; // already a real HTTPS URL — fast path
   try {
     const bot = getMainBot();
     if (!bot) return null;
     const fileId = raw.replace('tg-file:', '');
     const file = await bot.api.getFile(fileId);
-    return file.file_path
-      ? `https://api.telegram.org/file/bot${config.bots.main}/${file.file_path}`
-      : null;
+    if (!file.file_path) return null;
+    const resolved = `https://api.telegram.org/file/bot${config.bots.main}/${file.file_path}`;
+    // Persist the resolved URL so the next call takes the fast path
+    if (persistToUserId) {
+      prisma.user
+        .update({ where: { id: persistToUserId }, data: { photoUrl: resolved } })
+        .catch(() => { /* non-critical — ignore */ });
+    }
+    return resolved;
   } catch (err) {
     console.warn('[resolveTgFileUrl] Failed to resolve tg-file:', err);
     return null;
@@ -227,7 +235,7 @@ export const checkUsername = async (req: Request, res: Response): Promise<void> 
     // A fake username simply cannot complete Step 2.
 
     // Create a registration token (expires in 10 minutes)
-    const token = uuidv4();
+    const token = randomUUID();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await prisma.registrationToken.create({
@@ -349,7 +357,7 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
     const passwordHash = await bcrypt.hash(password, 12);
 
     // Generate strict unique referral code (8 chars)
-    const myReferralCode = uuidv4().split('-')[0].toUpperCase();
+    const myReferralCode = randomUUID().split('-')[0].toUpperCase();
 
     let referredById: string | null = null;
     let referrerIdForTransaction: string | null = null;
@@ -942,7 +950,7 @@ export const getWallet = async (req: AuthRequest, res: Response): Promise<void> 
     let finalReferralCode = user.referralCode;
     if (!finalReferralCode) {
       // Auto-generate for legacy users (8 chars)
-      finalReferralCode = uuidv4().split('-')[0].toUpperCase();
+      finalReferralCode = randomUUID().split('-')[0].toUpperCase();
       await prisma.user.update({
         where: { id: req.user!.id },
         data: { referralCode: finalReferralCode },

@@ -319,44 +319,56 @@ export const createBotVerifyTokens = async (req: AuthRequest, res: Response): Pr
       where: { userId, verified: false },
     });
 
-    const results = await Promise.all(
-      categories.map(async (cat) => {
-        // Reuse any already-verified token for this category
-        const existing = await prisma.botVerifyToken.findFirst({
-          where: { userId, category: cat, verified: true },
-        });
+    // Pre-fetch all existing verified tokens and all bots for the requested categories
+    // in two queries instead of N×2 queries inside the map below.
+    const [existingTokens, categoryBots] = await Promise.all([
+      prisma.botVerifyToken.findMany({
+        where: { userId, category: { in: categories }, verified: true },
+      }),
+      prisma.bot.findMany({
+        where: { category: { in: categories } },
+        select: { category: true, name: true },
+      }),
+    ]);
 
-        if (existing) {
-          const bot = await prisma.bot.findUnique({
-            where: { category: cat }, select: { name: true },
-          });
-          return {
-            category: cat,
-            token: existing.token,
-            botName: bot?.name ?? cat,
-            botUrl: `https://t.me/${bot?.name ?? cat}?start=${existing.token}`,
-            verified: true,
-          };
-        }
+    const existingTokenMap = new Map(existingTokens.map(t => [t.category, t]));
+    const botMap = new Map(categoryBots.map(b => [b.category, b]));
 
-        // Create a new token
-        const [token, bot] = await Promise.all([
-          prisma.botVerifyToken.create({
-            data: { userId, category: cat, expiresAt },
-          }),
-          prisma.bot.findUnique({
-            where: { category: cat }, select: { name: true },
-          }),
-        ]);
+    // Create new tokens for categories that don't already have a verified one
+    const categoriesToCreate = categories.filter(cat => !existingTokenMap.has(cat));
+    const newTokens = categoriesToCreate.length > 0
+      ? await Promise.all(
+          categoriesToCreate.map(cat =>
+            prisma.botVerifyToken.create({ data: { userId, category: cat, expiresAt } })
+          )
+        )
+      : [];
+    const newTokenMap = new Map(newTokens.map(t => [t.category, t]));
+
+    const results = categories.map((cat) => {
+      const bot = botMap.get(cat);
+      const botName = bot?.name ?? cat;
+
+      const existing = existingTokenMap.get(cat);
+      if (existing) {
         return {
           category: cat,
-          token: token.token,
-          botName: bot?.name ?? cat,
-          botUrl: `https://t.me/${bot?.name ?? cat}?start=${token.token}`,
-          verified: false,
+          token: existing.token,
+          botName,
+          botUrl: `https://t.me/${botName}?start=${existing.token}`,
+          verified: true,
         };
-      })
-    );
+      }
+
+      const token = newTokenMap.get(cat)!;
+      return {
+        category: cat,
+        token: token.token,
+        botName,
+        botUrl: `https://t.me/${botName}?start=${token.token}`,
+        verified: false,
+      };
+    });
 
     res.json({ success: true, data: results });
   } catch (error) {
@@ -425,42 +437,58 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
     const errors: { category: string; message: string }[] = [];
     const validItems: { category: string; count: number; price: number; botId: string }[] = [];
 
+    // ─── Pre-validate counts & parse before hitting the DB ───────────────────
+    const parsedItems: { category: string; count: number; price: number }[] = [];
     for (const item of items) {
       const { category, videoCount, priceAmount } = item;
-
       if (!category) {
         errors.push({ category: String(category), message: 'Category is required' });
         continue;
       }
-
       const count = parseInt(String(videoCount), 10);
       if (isNaN(count) || count < 1 || count > 5000) {
         errors.push({ category, message: 'Video count must be between 1 and 5000' });
         continue;
       }
-
       const price = parseFloat(String(priceAmount));
       if (isNaN(price) || price <= 0) {
         errors.push({ category, message: 'A valid positive price amount is required' });
         continue;
       }
+      parsedItems.push({ category: String(category), count, price });
+    }
 
-      const bot = await prisma.bot.findUnique({ where: { category: String(category) } });
-      if (!bot) {
-        errors.push({ category, message: 'No bot configured for this category' });
-        continue;
-      }
+    if (parsedItems.length > 0) {
+      // ─── Single query for all bots + parallel availability counts ──────────
+      // Avoids N sequential round-trips: 1 bots query + parallel count pairs
+      const categories = parsedItems.map((i) => i.category);
+      const [botsResult, ...availabilityResults] = await Promise.all([
+        prisma.bot.findMany({ where: { category: { in: categories } } }),
+        ...parsedItems.map((item) =>
+          Promise.all([
+            prisma.videos.count({ where: { category: item.category } }),
+            prisma.videoDelivery.count({ where: { userId, video: { category: item.category } } }),
+          ])
+        ),
+      ]);
 
-      const availableVideos = await prisma.videos.count({
-        where: { category: String(category), videoDeliveries: { none: { userId } } },
+      const botMap = new Map(botsResult.map((b) => [b.category, b]));
+
+      parsedItems.forEach((item, idx) => {
+        const bot = botMap.get(item.category);
+        if (!bot) {
+          errors.push({ category: item.category, message: 'No bot configured for this category' });
+          return;
+        }
+        const [total, received] = availabilityResults[idx] as [number, number];
+        const availableVideos = Math.max(0, total - received);
+        if (availableVideos < item.count) {
+          errors.push({ category: item.category, message: `Only ${availableVideos} unique videos available for ${item.category}` });
+          return;
+        }
+        totalPriceRequired += item.price;
+        validItems.push({ category: item.category, count: item.count, price: item.price, botId: bot.id });
       });
-
-      if (availableVideos < count) {
-        errors.push({ category, message: `Only ${availableVideos} unique videos available for ${category}` });
-        continue;
-      }
-      totalPriceRequired += price;
-      validItems.push({ category: String(category), count, price, botId: bot.id });
     }
 
     if (validItems.length === 0) {
@@ -671,18 +699,26 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
   }
 };
 
-// ─── Get My Orders ────────────────────────────────────────────────────────────
+// ─── Get My Orders (paginated) ────────────────────────────────────────────────
+// Query params: ?cursor=<lastOrderId>&limit=20
 export const getMyOrders = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit ?? '20'), 10) || 20));
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
 
     const orders = await prisma.order.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
+      take: limit + 1, // fetch one extra to determine if there's a next page
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       include: {
         _count: { select: { videoDeliveries: true } },
       },
     });
+
+    const hasMore = orders.length > limit;
+    if (hasMore) orders.pop(); // remove the extra item
 
     const ordersWithProgress = orders.map((order) => ({
       id: order.id,
@@ -696,7 +732,11 @@ export const getMyOrders = async (req: AuthRequest, res: Response): Promise<void
       completedAt: order.completedAt,
     }));
 
-    res.json({ success: true, data: ordersWithProgress });
+    res.json({
+      success: true,
+      data: ordersWithProgress,
+      nextCursor: hasMore ? orders[orders.length - 1].id : null,
+    });
   } catch (error) {
     console.error('[getMyOrders]', error);
     res.status(500).json({ success: false, message: 'Server error' });

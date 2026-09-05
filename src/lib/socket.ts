@@ -28,6 +28,17 @@ export const initSocket = (httpServer: HttpServer): SocketIOServer => {
       console.log(`[Socket] Client ${socket.id} left admin room`);
     });
 
+    // User joins their personal room to receive user-specific events (e.g. badge:activated)
+    socket.on('join:user', (userId: string) => {
+      socket.join(`user:${userId}`);
+      console.log(`[Socket] Client ${socket.id} joined user room: ${userId}`);
+    });
+
+    socket.on('leave:user', (userId: string) => {
+      socket.leave(`user:${userId}`);
+      console.log(`[Socket] Client ${socket.id} left user room: ${userId}`);
+    });
+
     // User joins a specific order room to receive progress updates
     socket.on('join:order', (orderId: string) => {
       socket.join(`order:${orderId}`);

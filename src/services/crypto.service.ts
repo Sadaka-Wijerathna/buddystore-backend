@@ -1,4 +1,3 @@
-import axios from 'axios';
 import prisma from '../lib/prisma';
 
 // Target Wallets (Provided by User)
