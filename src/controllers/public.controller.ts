@@ -2,10 +2,19 @@ import { Request, Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 import { hasActiveBadge } from './badge.controller';
+import { memCache } from '../lib/cache';
 
 // GET /api/v1/public/special-collections
 export const getPublicSpecialCollections = async (_req: Request, res: Response): Promise<void> => {
   try {
+    const CACHE_KEY = 'public:special-collections';
+    const cached = memCache.get<object[]>(CACHE_KEY);
+    if (cached) {
+      res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
+      res.json({ success: true, data: cached });
+      return;
+    }
+
     const collections = await prisma.specialCollection.findMany({
       orderBy: [
         { order: 'desc' },
@@ -13,20 +22,22 @@ export const getPublicSpecialCollections = async (_req: Request, res: Response):
       ] as any[],
     });
 
-    res.json({
-      success: true,
-      data: collections.map(c => ({
-        id: c.id,
-        slug: c.slug,
-        title: c.title,
-        keywords: c.keywords,
-        banner: c.banner,
-        totalVideos: c.totalVideos,
-        badgeOnly: c.badgeOnly,
-        createdAt: c.createdAt,
-        updatedAt: c.updatedAt,
-      })),
-    });
+    const data = collections.map(c => ({
+      id: c.id,
+      slug: c.slug,
+      title: c.title,
+      keywords: c.keywords,
+      banner: c.banner,
+      totalVideos: c.totalVideos,
+      badgeOnly: c.badgeOnly,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+    }));
+
+    // Cache for 2 minutes — collections change only when admin edits them
+    memCache.set(CACHE_KEY, data, 2 * 60_000);
+    res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
+    res.json({ success: true, data });
   } catch (error) {
     console.error('[getPublicSpecialCollections]', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -39,6 +50,14 @@ export const getVideoGallery = async (req: AuthRequest, res: Response): Promise<
   try {
     const userId = req.user?.id;
     const isBadgeHolder = userId ? await hasActiveBadge(userId) : false;
+
+    // Cache key varies by badge status — badge holders see unlocked content
+    const CACHE_KEY = `public:video-gallery:badge=${isBadgeHolder}`;
+    const cached = memCache.get<object[]>(CACHE_KEY);
+    if (cached) {
+      res.json({ success: true, data: cached });
+      return;
+    }
 
     // ── 4 queries total, regardless of category count (was 3N+2) ─────────────
 
@@ -126,6 +145,8 @@ export const getVideoGallery = async (req: AuthRequest, res: Response): Promise<
         };
       });
 
+    // Cache for 60 seconds per badge status — heavy 4-query response
+    memCache.set(CACHE_KEY, data, 60_000);
     res.json({ success: true, data });
   } catch (error) {
     console.error('[getVideoGallery]', error);
