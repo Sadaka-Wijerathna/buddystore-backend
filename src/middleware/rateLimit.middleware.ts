@@ -1,5 +1,6 @@
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
+import type { RedisReply } from 'rate-limit-redis';
 import prisma from '../lib/prisma';
 
 /**
@@ -38,7 +39,7 @@ function createRedisStore(prefix: string) {
         },
         body: JSON.stringify(args),
       });
-      const data = await res.json() as { result: unknown };
+      const data = await res.json() as { result: RedisReply };
       return data.result;
     },
   });
