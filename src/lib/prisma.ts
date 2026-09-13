@@ -4,7 +4,14 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 
 function createPrismaClient() {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    // Prevent "too many clients" errors on Render/Neon free tier.
+    // Free PostgreSQL plans cap at ~25 total connections across all services.
+    max: 5,              // max 5 concurrent DB connections
+    idleTimeoutMillis: 30_000,   // close idle connections after 30s
+    connectionTimeoutMillis: 20_000, // fail fast if no connection available in 20s
+  });
 
   // Prevent idle connection terminations from crashing the Node.js process
   pool.on('error', (err) => {
