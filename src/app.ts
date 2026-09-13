@@ -22,10 +22,11 @@ import { authenticate } from './middleware/auth.middleware';
 const app = express();
 
 // ─── Reverse Proxy Trust ──────────────────────────────────────────────────────
-// Render (and most PaaS providers) sit behind a load balancer that sets
-// X-Forwarded-For. Without this, express-rate-limit cannot identify the real
-// client IP and throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
-app.set('trust proxy', 1);
+// Cloudflare (hop 1) → Render load balancer (hop 2) → Express
+// trust 2 hops so express-rate-limit reads the real client IP from
+// X-Forwarded-For instead of Cloudflare's shared IP address.
+// Without this, all users share the same rate-limit bucket (CF's IP).
+app.set('trust proxy', 2);
 
 app.disable('x-powered-by');
 
