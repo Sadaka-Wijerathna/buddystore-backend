@@ -1,3 +1,6 @@
+// ⚠️  MUST be the very first import — Sentry needs to load before everything else
+import './instrument';
+
 import 'dotenv/config';
 import http from 'http';
 import app from './app';

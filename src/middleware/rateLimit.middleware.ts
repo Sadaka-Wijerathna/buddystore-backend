@@ -1,12 +1,39 @@
 import rateLimit from 'express-rate-limit';
+import { Redis } from '@upstash/redis';
+import { RedisStore } from 'rate-limit-redis';
 import prisma from '../lib/prisma';
 
 /**
  * Shared rate-limiter instances for BuddyStore.
  *
+ * Uses Upstash Redis as the backing store so rate-limit counters
+ * survive Render restarts and deploys. Without Redis, in-memory
+ * counters reset on every deploy — a bot could hammer the login
+ * endpoint, wait for a restart, then hammer again.
+ *
  * Limits are per-IP per window. All limiters use `standardHeaders: true`
  * so browsers and API clients receive RateLimit-* response headers.
  */
+
+// ─── Upstash Redis client ────────────────────────────────────────────────────
+// Falls back gracefully to in-memory if env vars are not set (local dev).
+function createRedisStore(prefix: string) {
+  const url   = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!url || !token) {
+    console.warn(`[RateLimit] UPSTASH env vars missing — using in-memory store for "${prefix}"`);
+    return undefined; // express-rate-limit defaults to in-memory
+  }
+
+  const redis = new Redis({ url, token });
+
+  return new RedisStore({
+    prefix,                      // namespaces keys so limiters don't collide
+    sendCommand: (...args: [string, ...unknown[]]) =>
+      redis.call(args[0], ...args.slice(1) as string[]),
+  });
+}
 
 // ─── Login (brute-force protection) ─────────────────────────────────────────
 // 10 attempts per 15-minute window keeps humans comfortable while blocking bots.
@@ -15,6 +42,7 @@ export const authLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  store: createRedisStore('rl:auth:'),
   message: {
     success: false,
     message: 'Too many login attempts. Please wait 15 minutes and try again.',
@@ -44,6 +72,7 @@ export const registerLimiter = rateLimit({
   max: 15,
   standardHeaders: true,
   legacyHeaders: false,
+  store: createRedisStore('rl:register:'),
   message: {
     success: false,
     message: 'Too many registration attempts. Please wait 10 minutes and try again.',
@@ -57,6 +86,7 @@ export const otpLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  store: createRedisStore('rl:otp:'),
   message: {
     success: false,
     message: 'Too many OTP requests. Please wait 15 minutes and try again.',
@@ -70,6 +100,7 @@ export const generalLimiter = rateLimit({
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
+  store: createRedisStore('rl:general:'),
   message: {
     success: false,
     message: 'Too many requests. Please slow down.',

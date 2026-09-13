@@ -1,5 +1,5 @@
 import express from 'express';
-
+import * as Sentry from '@sentry/node';
 import helmet from 'helmet';
 import cors from 'cors';
 import path from 'path';
@@ -149,6 +149,8 @@ app.use('/api/v1/uploads', authenticate, express.static(path.join(process.cwd(),
 
 // ─── Error Handling ────────────────────────────────────────────────────────────
 app.use(notFound);
+// Sentry error handler must come AFTER all routes and BEFORE other error middleware
+Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
 export default app;
