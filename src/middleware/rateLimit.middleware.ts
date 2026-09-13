@@ -1,5 +1,4 @@
 import rateLimit from 'express-rate-limit';
-import { Redis } from '@upstash/redis';
 import { RedisStore } from 'rate-limit-redis';
 import prisma from '../lib/prisma';
 
@@ -16,6 +15,7 @@ import prisma from '../lib/prisma';
  */
 
 // ─── Upstash Redis client ────────────────────────────────────────────────────
+// Uses Upstash's HTTP REST API directly — no extra client library needed.
 // Falls back gracefully to in-memory if env vars are not set (local dev).
 function createRedisStore(prefix: string) {
   const url   = process.env.UPSTASH_REDIS_REST_URL;
@@ -26,12 +26,21 @@ function createRedisStore(prefix: string) {
     return undefined; // express-rate-limit defaults to in-memory
   }
 
-  const redis = new Redis({ url, token });
-
   return new RedisStore({
-    prefix,                      // namespaces keys so limiters don't collide
-    sendCommand: (...args: [string, ...unknown[]]) =>
-      redis.call(args[0], ...args.slice(1) as string[]),
+    prefix,
+    // Upstash exposes a REST endpoint that accepts raw Redis commands as JSON arrays.
+    sendCommand: async (...args: string[]) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(args),
+      });
+      const data = await res.json() as { result: unknown };
+      return data.result;
+    },
   });
 }
 
