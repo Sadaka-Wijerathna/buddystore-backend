@@ -1,7 +1,6 @@
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import type { RedisReply } from 'rate-limit-redis';
-import { Redis } from '@upstash/redis';
 import prisma from '../lib/prisma';
 
 /**
@@ -17,9 +16,9 @@ import prisma from '../lib/prisma';
  */
 
 // ─── Upstash Redis client ────────────────────────────────────────────────────
-// Uses @upstash/redis which correctly handles the Upstash REST API, including
-// throwing on error responses (e.g. NOSCRIPT) so rate-limit-redis can fall
-// back from EVALSHA → EVAL and receive the expected [hits, resetTimeMs] array.
+// Uses Upstash's HTTP REST API. Crucially, we throw when the response contains
+// an error (e.g. NOSCRIPT) so rate-limit-redis can catch it and fall back from
+// EVALSHA → EVAL, receiving the expected [hits, resetTimeMs] array.
 // Falls back gracefully to in-memory if env vars are not set (local dev).
 function createRedisStore(prefix: string) {
   const url   = process.env.UPSTASH_REDIS_REST_URL;
@@ -30,15 +29,22 @@ function createRedisStore(prefix: string) {
     return undefined; // express-rate-limit defaults to in-memory
   }
 
-  const redis = new Redis({ url, token });
-
   return new RedisStore({
     prefix,
-    // @upstash/redis properly throws on Upstash error responses (e.g. NOSCRIPT),
-    // allowing rate-limit-redis to fall back from EVALSHA to EVAL correctly.
     sendCommand: async (...args: string[]) => {
-      const [command, ...rest] = args;
-      return redis.call(command, ...rest) as Promise<RedisReply>;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(args),
+      });
+      const data = await res.json() as { result?: RedisReply; error?: string };
+      // Throw on Upstash errors (e.g. NOSCRIPT) so rate-limit-redis can
+      // catch them and fall back from EVALSHA to EVAL correctly.
+      if (data.error) throw new Error(data.error);
+      return data.result as RedisReply;
     },
   });
 }
