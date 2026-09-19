@@ -53,3 +53,9 @@ services:
         sync: false
       - key: WEBHOOK_SECRET
         sync: false
+      - key: TELEGRAM_CLIENT_ID
+        value: "8289729470"
+      - key: TELEGRAM_CLIENT_SECRET
+        sync: false
+      - key: TELEGRAM_REDIRECT_URI
+        value: "https://tgbuddy.store/auth/telegram/callback"
