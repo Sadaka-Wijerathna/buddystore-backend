@@ -1232,44 +1232,51 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
     }
 
     // ── Step 1: Exchange code for ID token ────────────────────────────────────
-    const tokenRes = await fetch('https://oauth.telegram.org/auth/token', {
+    const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+    });
+
+    const tokenRes = await fetch('https://oauth.telegram.org/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type:    'authorization_code',
-        code,
-        client_id:     clientId,
-        client_secret: clientSecret,
-        redirect_uri:  redirectUri,
-      }),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Basic ${credentials}`,
+      },
+      body: params.toString(),
     });
 
     const tokenData = await tokenRes.json() as {
       ok?: boolean;
       error?: string;
-      result?: {
-        user: {
-          id: number;
-          first_name: string;
-          last_name?: string;
-          username?: string;
-          photo_url?: string;
-        };
-        access_token?: string;
-      };
+      id_token?: string;
     };
 
-    if (!tokenRes.ok || !tokenData.result?.user) {
+    if (!tokenRes.ok || !tokenData.id_token) {
       console.error('[telegramOidcCallback] Token exchange failed:', tokenData);
       res.status(401).json({ success: false, message: tokenData.error ?? 'Telegram authorization failed' });
       return;
     }
 
-    const tgUser = tokenData.result.user;
+    const decodedToken = jwt.decode(tokenData.id_token) as {
+      sub?: string | number;
+      given_name?: string;
+      family_name?: string;
+      preferred_username?: string;
+      picture?: string;
+    } | null;
+
+    if (!decodedToken || !decodedToken.sub) {
+      console.error('[telegramOidcCallback] Invalid id_token:', decodedToken);
+      res.status(401).json({ success: false, message: 'Invalid ID token received from Telegram' });
+      return;
+    }
 
     // ── Step 2: Find or create user ───────────────────────────────────────────
-    const telegramId       = BigInt(tgUser.id);
-    const incomingUsername = (tgUser.username ?? '').toLowerCase();
+    const telegramId       = BigInt(decodedToken.sub);
+    const incomingUsername = (decodedToken.preferred_username ?? '').toLowerCase();
 
     let isNewUser = false;
     let user = await prisma.user.findUnique({ where: { telegramId } });
@@ -1277,11 +1284,11 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
     if (!user) {
       isNewUser = true;
 
-      let finalUsername = incomingUsername || `tg_${tgUser.id}`;
+      let finalUsername = incomingUsername || `tg_${decodedToken.sub}`;
       const taken = incomingUsername
         ? await prisma.user.findUnique({ where: { telegramUsername: finalUsername } })
         : null;
-      if (taken) finalUsername = `${finalUsername}_${tgUser.id}`;
+      if (taken) finalUsername = `${finalUsername}_${decodedToken.sub}`;
 
       const randomHash  = await bcrypt.hash(randomUUID() + randomUUID(), 12);
       const referralCode = randomUUID().split('-')[0].toUpperCase();
@@ -1290,11 +1297,11 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
         data: {
           telegramId,
           telegramUsername: finalUsername,
-          firstName:   tgUser.first_name ?? '',
-          lastName:    tgUser.last_name ?? null,
+          firstName:   decodedToken.given_name ?? '',
+          lastName:    decodedToken.family_name ?? null,
           passwordHash: randomHash,
           referralCode,
-          photoUrl:    tgUser.photo_url ?? null,
+          photoUrl:    decodedToken.picture ?? null,
           lastLoginAt: new Date(),
           role:      finalUsername === config.superAdminUsername ? 'ADMIN' : 'USER',
           adminRole: finalUsername === config.superAdminUsername ? 'SUPER_ADMIN' : null,
@@ -1305,10 +1312,10 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
         where: { id: user.id },
         data: {
           lastLoginAt: new Date(),
-          ...(tgUser.first_name && { firstName: tgUser.first_name }),
-          ...(tgUser.last_name  !== undefined && { lastName: tgUser.last_name ?? null }),
-          ...(tgUser.photo_url  && { photoUrl: tgUser.photo_url }),
-          ...(incomingUsername  && incomingUsername !== user.telegramUsername && {
+          ...(decodedToken.given_name && { firstName: decodedToken.given_name }),
+          ...(decodedToken.family_name !== undefined && { lastName: decodedToken.family_name ?? null }),
+          ...(decodedToken.picture && { photoUrl: decodedToken.picture }),
+          ...(incomingUsername && incomingUsername !== user.telegramUsername && {
             oldTelegramUsername: user.telegramUsername,
             telegramUsername:    incomingUsername,
             usernameUpdatedAt:   new Date(),
@@ -1352,11 +1359,11 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
           id:               user.id,
           telegramId:       user.telegramId.toString(),
           telegramUsername: incomingUsername || user.telegramUsername,
-          firstName:        tgUser.first_name || user.firstName,
-          lastName:         tgUser.last_name  || user.lastName || null,
+          firstName:        decodedToken.given_name  || user.firstName,
+          lastName:         decodedToken.family_name || user.lastName || null,
           role:             user.role,
           adminRole:        user.adminRole,
-          photoUrl:         tgUser.photo_url  || user.photoUrl || null,
+          photoUrl:         decodedToken.picture     || user.photoUrl || null,
           superBadge:       activeBadge,
         },
       },
