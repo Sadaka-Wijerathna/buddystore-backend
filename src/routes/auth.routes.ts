@@ -23,6 +23,9 @@ router.post('/login', authLimiter, authController.login);
 // Telegram Login Widget — verify widget hash, create or log in user (no password required)
 router.post('/telegram-widget', authLimiter, authController.telegramWidgetLogin);
 
+// Telegram OIDC — exchange authorization code from the new OpenID Connect flow
+router.post('/telegram-oidc', authLimiter, authController.telegramOidcCallback);
+
 // Forgot Password Step 1: Request OTP (sent via Telegram)
 router.post('/forgot-password/request', otpLimiter, authController.requestPasswordReset);
 

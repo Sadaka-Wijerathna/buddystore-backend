@@ -1209,3 +1209,160 @@ export const telegramWidgetLogin = async (req: Request, res: Response): Promise<
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+// ─── Telegram OIDC Callback ────────────────────────────────────────────────────
+// Exchanges the authorization code from Telegram's OIDC flow for an ID token,
+// then creates or updates the user and returns a BuddyStore JWT.
+export const telegramOidcCallback = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { code } = req.body as { code?: string };
+
+    if (!code) {
+      res.status(400).json({ success: false, message: 'Authorization code is required' });
+      return;
+    }
+
+    const clientId     = process.env.TELEGRAM_CLIENT_ID;
+    const clientSecret = process.env.TELEGRAM_CLIENT_SECRET;
+    const redirectUri  = process.env.TELEGRAM_REDIRECT_URI ?? 'https://tgbuddy.store/auth/telegram/callback';
+
+    if (!clientId || !clientSecret) {
+      res.status(503).json({ success: false, message: 'Telegram login is not configured on this server' });
+      return;
+    }
+
+    // ── Step 1: Exchange code for ID token ────────────────────────────────────
+    const tokenRes = await fetch('https://oauth.telegram.org/auth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type:    'authorization_code',
+        code,
+        client_id:     clientId,
+        client_secret: clientSecret,
+        redirect_uri:  redirectUri,
+      }),
+    });
+
+    const tokenData = await tokenRes.json() as {
+      ok?: boolean;
+      error?: string;
+      result?: {
+        user: {
+          id: number;
+          first_name: string;
+          last_name?: string;
+          username?: string;
+          photo_url?: string;
+        };
+        access_token?: string;
+      };
+    };
+
+    if (!tokenRes.ok || !tokenData.result?.user) {
+      console.error('[telegramOidcCallback] Token exchange failed:', tokenData);
+      res.status(401).json({ success: false, message: tokenData.error ?? 'Telegram authorization failed' });
+      return;
+    }
+
+    const tgUser = tokenData.result.user;
+
+    // ── Step 2: Find or create user ───────────────────────────────────────────
+    const telegramId       = BigInt(tgUser.id);
+    const incomingUsername = (tgUser.username ?? '').toLowerCase();
+
+    let isNewUser = false;
+    let user = await prisma.user.findUnique({ where: { telegramId } });
+
+    if (!user) {
+      isNewUser = true;
+
+      let finalUsername = incomingUsername || `tg_${tgUser.id}`;
+      const taken = incomingUsername
+        ? await prisma.user.findUnique({ where: { telegramUsername: finalUsername } })
+        : null;
+      if (taken) finalUsername = `${finalUsername}_${tgUser.id}`;
+
+      const randomHash  = await bcrypt.hash(randomUUID() + randomUUID(), 12);
+      const referralCode = randomUUID().split('-')[0].toUpperCase();
+
+      user = await prisma.user.create({
+        data: {
+          telegramId,
+          telegramUsername: finalUsername,
+          firstName:   tgUser.first_name ?? '',
+          lastName:    tgUser.last_name ?? null,
+          passwordHash: randomHash,
+          referralCode,
+          photoUrl:    tgUser.photo_url ?? null,
+          lastLoginAt: new Date(),
+          role:      finalUsername === config.superAdminUsername ? 'ADMIN' : 'USER',
+          adminRole: finalUsername === config.superAdminUsername ? 'SUPER_ADMIN' : null,
+        },
+      });
+    } else {
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          lastLoginAt: new Date(),
+          ...(tgUser.first_name && { firstName: tgUser.first_name }),
+          ...(tgUser.last_name  !== undefined && { lastName: tgUser.last_name ?? null }),
+          ...(tgUser.photo_url  && { photoUrl: tgUser.photo_url }),
+          ...(incomingUsername  && incomingUsername !== user.telegramUsername && {
+            oldTelegramUsername: user.telegramUsername,
+            telegramUsername:    incomingUsername,
+            usernameUpdatedAt:   new Date(),
+          }),
+        },
+      }).catch(e => console.error('[telegramOidcCallback] profile sync failed:', e));
+    }
+
+    if (user.isBanned) {
+      res.status(403).json({ success: false, message: 'Your account has been banned.' });
+      return;
+    }
+
+    // ── Step 3: Issue JWT ─────────────────────────────────────────────────────
+    const jwtToken = jwt.sign(
+      {
+        id:               user.id,
+        role:             user.role,
+        adminRole:        user.adminRole,
+        telegramUsername: incomingUsername || user.telegramUsername,
+        tokenVersion:     user.tokenVersion ?? 0,
+      },
+      config.jwt.secret,
+      { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
+    );
+
+    const superBadge = await prisma.superBadge.findUnique({
+      where:  { userId: user.id },
+      select: { id: true, expiresAt: true, status: true },
+    });
+    const activeBadge =
+      superBadge?.status === 'ACTIVE' && superBadge.expiresAt > new Date() ? superBadge : undefined;
+
+    res.json({
+      success: true,
+      message: isNewUser ? 'Account created successfully!' : 'Login successful',
+      data: {
+        token: jwtToken,
+        isNewUser,
+        user: {
+          id:               user.id,
+          telegramId:       user.telegramId.toString(),
+          telegramUsername: incomingUsername || user.telegramUsername,
+          firstName:        tgUser.first_name || user.firstName,
+          lastName:         tgUser.last_name  || user.lastName || null,
+          role:             user.role,
+          adminRole:        user.adminRole,
+          photoUrl:         tgUser.photo_url  || user.photoUrl || null,
+          superBadge:       activeBadge,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[telegramOidcCallback]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
