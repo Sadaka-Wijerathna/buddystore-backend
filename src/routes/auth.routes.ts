@@ -20,6 +20,9 @@ router.post('/login/check-username', authLimiter, authController.checkLoginUsern
 // Login
 router.post('/login', authLimiter, authController.login);
 
+// Telegram Login Widget — verify widget hash, create or log in user (no password required)
+router.post('/telegram-widget', authLimiter, authController.telegramWidgetLogin);
+
 // Forgot Password Step 1: Request OTP (sent via Telegram)
 router.post('/forgot-password/request', otpLimiter, authController.requestPasswordReset);
 

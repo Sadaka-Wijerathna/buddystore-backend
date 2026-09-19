@@ -3,3 +3,8 @@ dist/
 uploads/
 .env
 *.log
+
+# Never commit secret/token files
+bots.txt
+*.tokens.txt
+secrets.txt

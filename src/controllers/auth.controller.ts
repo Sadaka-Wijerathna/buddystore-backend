@@ -195,7 +195,6 @@ export const checkLoginUsername = async (req: Request, res: Response): Promise<v
   }
 };
 
-
 // ─── Step 1: Check Telegram username ──────────────────────────────────────────
 // Frontend sends telegramUsername, backend validates by fetching chat info
 export const checkUsername = async (req: Request, res: Response): Promise<void> => {
@@ -1059,3 +1058,154 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
   }
 };
 
+// ─── Telegram Login Widget ────────────────────────────────────────────────────
+// Verifies data sent by the Telegram Login Widget (HMAC-SHA256 + auth_date check).
+// Creates a new user if one doesn't exist for this telegramId, or logs in existing user.
+// The existing username+password flow is completely unaffected.
+export const telegramWidgetLogin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { hash, ...telegramData } = req.body as Record<string, string>;
+
+    if (!hash || !telegramData.id || !telegramData.auth_date) {
+      res.status(400).json({ success: false, message: 'Invalid Telegram login data' });
+      return;
+    }
+
+    const botToken = config.bots.main;
+    if (!botToken) {
+      res.status(503).json({ success: false, message: 'Telegram login is not configured on this server' });
+      return;
+    }
+
+    // ── Step 1: Verify HMAC-SHA256 hash ──────────────────────────────────────
+    // secret_key = SHA256(bot_token) — NOT the token itself
+    const secretKey = require('crypto').createHash('sha256').update(botToken).digest();
+    const checkString = Object.keys(telegramData)
+      .filter(k => telegramData[k] !== undefined && telegramData[k] !== null && telegramData[k] !== '')
+      .sort()
+      .map(k => `${k}=${telegramData[k]}`)
+      .join('\n');
+    const computedHash = require('crypto').createHmac('sha256', secretKey).update(checkString).digest('hex');
+
+    if (computedHash !== hash) {
+      res.status(401).json({ success: false, message: 'Telegram data verification failed' });
+      return;
+    }
+
+    // ── Step 2: Check auth_date is fresh (within 24 hours) ───────────────────
+    const authDate = parseInt(telegramData.auth_date, 10);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    if (nowUnix - authDate > 86400) {
+      res.status(401).json({ success: false, message: 'Telegram login session expired. Please try again.' });
+      return;
+    }
+
+    // ── Step 3: Find or create user ───────────────────────────────────────────
+    const telegramId = BigInt(telegramData.id);
+    const incomingUsername = (telegramData.username || '').toLowerCase();
+
+    let isNewUser = false;
+    let user = await prisma.user.findUnique({ where: { telegramId } });
+
+    if (!user) {
+      isNewUser = true;
+
+      // Determine safe username — fallback to tg_<id> if no username set
+      let finalUsername = incomingUsername || `tg_${telegramData.id}`;
+
+      // If that username is already taken by a different telegramId, append the id
+      const taken = incomingUsername
+        ? await prisma.user.findUnique({ where: { telegramUsername: finalUsername } })
+        : null;
+      if (taken) {
+        finalUsername = `${finalUsername}_${telegramData.id}`;
+      }
+
+      // Widget users get a random unguessable passwordHash.
+      // They can always set a real password later via Forgot Password.
+      const randomHash = await bcrypt.hash(randomUUID() + randomUUID(), 12);
+      const referralCode = randomUUID().split('-')[0].toUpperCase();
+
+      user = await prisma.user.create({
+        data: {
+          telegramId,
+          telegramUsername: finalUsername,
+          firstName: telegramData.first_name || '',
+          lastName: telegramData.last_name || null,
+          passwordHash: randomHash,
+          referralCode,
+          photoUrl: telegramData.photo_url || null,
+          lastLoginAt: new Date(),
+          role: finalUsername === config.superAdminUsername ? 'ADMIN' : 'USER',
+          adminRole: finalUsername === config.superAdminUsername ? 'SUPER_ADMIN' : null,
+        },
+      });
+    } else {
+      // Sync profile data silently (fire-and-forget)
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          lastLoginAt: new Date(),
+          ...(telegramData.first_name && { firstName: telegramData.first_name }),
+          ...(telegramData.last_name !== undefined && { lastName: telegramData.last_name || null }),
+          ...(telegramData.photo_url && { photoUrl: telegramData.photo_url }),
+          ...(incomingUsername && incomingUsername !== user.telegramUsername && {
+            oldTelegramUsername: user.telegramUsername,
+            telegramUsername: incomingUsername,
+            usernameUpdatedAt: new Date(),
+          }),
+        },
+      }).catch(e => console.error('[telegramWidgetLogin] profile sync failed:', e));
+    }
+
+    // ── Step 4: Ban check ─────────────────────────────────────────────────────
+    if (user.isBanned) {
+      res.status(403).json({ success: false, message: 'Your account has been banned. Please contact support.' });
+      return;
+    }
+
+    // ── Step 5: Issue JWT ─────────────────────────────────────────────────────
+    const jwtToken = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+        adminRole: user.adminRole,
+        telegramUsername: incomingUsername || user.telegramUsername,
+        tokenVersion: user.tokenVersion ?? 0,
+      },
+      config.jwt.secret,
+      { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
+    );
+
+    // Fetch active badge
+    const superBadge = await prisma.superBadge.findUnique({
+      where: { userId: user.id },
+      select: { id: true, expiresAt: true, status: true },
+    });
+    const activeBadge =
+      superBadge?.status === 'ACTIVE' && superBadge.expiresAt > new Date() ? superBadge : undefined;
+
+    res.json({
+      success: true,
+      message: isNewUser ? 'Account created successfully!' : 'Login successful',
+      data: {
+        token: jwtToken,
+        isNewUser,
+        user: {
+          id: user.id,
+          telegramId: user.telegramId.toString(),
+          telegramUsername: incomingUsername || user.telegramUsername,
+          firstName: telegramData.first_name || user.firstName,
+          lastName: telegramData.last_name || user.lastName || null,
+          role: user.role,
+          adminRole: user.adminRole,
+          photoUrl: telegramData.photo_url || user.photoUrl || null,
+          superBadge: activeBadge,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('[telegramWidgetLogin]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
