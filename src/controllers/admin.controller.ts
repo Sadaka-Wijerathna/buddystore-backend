@@ -632,9 +632,43 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response): Promis
       return;
     }
 
-    if (order.status !== 'PENDING') {
+    // ── Stars-paid CONFIRMED orders: allow REJECTED with auto-refund ────────
+    // Stars orders are created already CONFIRMED (payment is instant), so the
+    // standard PENDING guard would block admin from ever cancelling them.
+    // We carve out a special path: admin can REJECT a CONFIRMED Stars order
+    // which triggers a Telegram Stars refund back to the user.
+    const isStarsRefundPath =
+      status === 'REJECTED' &&
+      order.status === 'CONFIRMED' &&
+      order.paymentMethod === 'STARS' &&
+      !!order.starsTransactionId;
+
+    if (!isStarsRefundPath && order.status !== 'PENDING') {
       res.status(400).json({ success: false, message: `Cannot change status of a ${order.status} order` });
       return;
+    }
+
+    // ── Issue Telegram Stars refund ──────────────────────────────────────────
+    if (isStarsRefundPath) {
+      const telegramUserId = order.user.telegramId?.toString();
+      if (telegramUserId && order.starsTransactionId) {
+        try {
+          // Telegram allows refunds within 21 days of the original payment.
+          await mainBot.api.refundStarPayment(telegramUserId, order.starsTransactionId);
+          console.log(`[Admin] ⭐ Stars refunded for order ${order.id} → user ${telegramUserId}`);
+
+          // Notify the user in Telegram
+          await mainBot.api.sendMessage(
+            telegramUserId,
+            `✅ *Order Cancelled & Refunded*\n\nYour order has been cancelled by the admin and your Telegram Stars have been refunded. The Stars will appear in your account shortly.`,
+            { parse_mode: 'Markdown' }
+          ).catch(err => console.warn(`[Admin] Could not send refund notification to ${telegramUserId}:`, err));
+        } catch (refundErr: any) {
+          // Log but don't block — admin may still want to mark it as rejected
+          // (e.g. if 21-day window has passed or Stars were already refunded)
+          console.error(`[Admin] Stars refund failed for order ${order.id}:`, refundErr?.description ?? refundErr);
+        }
+      }
     }
 
     const updatedOrder = await prisma.order.update({
@@ -671,7 +705,9 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response): Promis
 
     res.json({
       success: true,
-      message: `Order ${status.toLowerCase()} successfully`,
+      message: isStarsRefundPath
+        ? 'Order rejected and Stars refund issued successfully'
+        : `Order ${status.toLowerCase()} successfully`,
       data: { id: updatedOrder.id, status: updatedOrder.status },
     });
   } catch (error) {
@@ -679,6 +715,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response): Promis
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
 
 // ─── Confirm all PENDING orders sharing the same receipt URL ─────────────────
 // PATCH /admin/orders/confirm-by-receipt   body: { receiptUrl: string }

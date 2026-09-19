@@ -219,5 +219,121 @@ export function initCronJobs() {
     }
   });
 
+  // ── Stars: Auto-fulfill orphaned paid attempts — every 30 minutes ─────────
+  // If a user paid Stars but closed the website before clicking "Place Order",
+  // their StarsPaymentAttempt is marked paid=true but no Order was ever created.
+  // This job auto-fulfills those attempts so users never lose their Stars.
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      // Find paid attempts older than 10 minutes (give the frontend time to fulfill normally)
+      const threshold = new Date(Date.now() - 10 * 60 * 1000);
+      const orphanedAttempts = await prisma.starsPaymentAttempt.findMany({
+        where: {
+          paid: true,
+          createdAt: { lt: threshold },
+        },
+      });
+
+      if (orphanedAttempts.length === 0) return;
+
+      console.log(`[Cron] ⭐ Found ${orphanedAttempts.length} orphaned paid Stars attempt(s) — auto-fulfilling...`);
+
+      // Batch-load all relevant users in one query
+      const userIds = [...new Set(orphanedAttempts.map(a => a.userId))];
+      const users = await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, telegramId: true },
+      });
+      const userMap = new Map(users.map(u => [u.id, u]));
+
+      for (const attempt of orphanedAttempts) {
+        try {
+          const items = attempt.items as any[];
+          const userDb = userMap.get(attempt.userId);
+
+          if (!userDb) {
+            console.warn(`[Cron] User ${attempt.userId} not found for attempt ${attempt.id} — skipping`);
+            continue;
+          }
+
+          // Create orders in a transaction
+          const orderJobs: any[] = items.map((item: any) =>
+            prisma.order.create({
+              data: {
+                userId: attempt.userId,
+                botId: item.botId,
+                category: item.category,
+                videoCount: item.count,
+                priceAmount: item.price,
+                paymentMethod: 'STARS',
+                starsTransactionId: attempt.starsTransactionId,
+                status: 'CONFIRMED',
+                confirmedAt: new Date(),
+                receiptUrl: null,
+              },
+            })
+          );
+
+          // Delete the attempt record in the same transaction
+          orderJobs.push(prisma.starsPaymentAttempt.delete({ where: { id: attempt.id } }));
+
+          const results = await prisma.$transaction(orderJobs) as any[];
+          const createdOrders = results.slice(0, items.length);
+
+          // Queue video delivery for each created order
+          for (const o of createdOrders) {
+            await videoDeliveryQueue.add(
+              'deliver-videos',
+              {
+                orderId: o.id,
+                userId: attempt.userId,
+                userTelegramId: userDb.telegramId.toString(),
+                category: o.category,
+                videoCount: o.videoCount,
+              },
+              { attempts: 3, backoff: { type: 'exponential', delay: 5000 } }
+            );
+          }
+
+          // Notify user in Telegram
+          const { mainBot } = await import('../bots/main.bot');
+          await mainBot.api.sendMessage(
+            userDb.telegramId.toString(),
+            `✅ *Order Confirmed!* ⭐\n\nYour Stars payment has been processed and your videos are on their way! We noticed you left the website before completing the order — no worries, we've got you covered.`,
+            { parse_mode: 'Markdown' }
+          ).catch(() => {}); // Don't fail the job if notification fails
+
+          console.log(`[Cron] ⭐ Auto-fulfilled attempt ${attempt.id} → ${createdOrders.length} order(s) for user ${attempt.userId}`);
+        } catch (err) {
+          console.error(`[Cron] Failed to auto-fulfill Stars attempt ${attempt.id}:`, err);
+        }
+      }
+    } catch (error) {
+      console.error('[Cron] Error in Stars orphaned attempt auto-fulfillment:', error);
+    }
+  });
+
+
+  // ── Stars: Delete stale unpaid attempts — daily at 2 AM ──────────────────
+  // StarsPaymentAttempt records with paid=false older than 24h are dead —
+  // the invoice link has expired and will never be paid. Clean them up.
+  cron.schedule('0 2 * * *', async () => {
+    try {
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const result = await prisma.starsPaymentAttempt.deleteMany({
+        where: {
+          paid: false,
+          createdAt: { lt: oneDayAgo },
+        },
+      });
+      if (result.count > 0) {
+        console.log(`[Cron] 🧹 Deleted ${result.count} stale unpaid Stars attempt(s).`);
+      }
+    } catch (error) {
+      console.error('[Cron] Error cleaning up stale Stars attempts:', error);
+    }
+  });
+
   console.log('✅ Cron jobs initialized');
 }
+

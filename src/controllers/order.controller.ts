@@ -553,7 +553,7 @@ export const createBatchOrders = async (req: AuthRequest, res: Response): Promis
     const transactionJobs: any[] = [];
     let starsPaymentAttemptId: string | null = null;
 
-    if (paymentMethod === 'STARS') {
+    if (!fullyPaidByWallet && paymentMethod === 'STARS') {
       // Calculate Stars based on LKR price and commission offset
       starsToPay = Math.ceil((remainingToPay / config.stars.rateLkr) * config.stars.commissionOffset);
       

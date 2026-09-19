@@ -306,13 +306,75 @@ mainBot.on('message', async (ctx: Context) => {
 /** 
  * Step 1: Pre-Checkout Query
  * Telegram asks the bot if we want to accept this payment.
- * We approve all queries because the inventory is digital and infinite.
+ * We validate stock before answering — if a category ran out between invoice
+ * creation and payment, we reject here so Stars are never deducted.
+ * Must respond within 10 seconds per Telegram's API requirement.
  */
 mainBot.on('pre_checkout_query', async (ctx) => {
-  await ctx.answerPreCheckoutQuery(true).catch((err) => {
-    console.error('[MainBot] Failed to answer pre_checkout_query:', err);
-  });
+  const rawPayload = ctx.preCheckoutQuery.invoice_payload;
+
+  // Only validate "attempt:" payloads (our Stars flow)
+  if (!rawPayload?.startsWith('attempt:')) {
+    await ctx.answerPreCheckoutQuery(true).catch((err) => {
+      console.error('[MainBot] Failed to answer pre_checkout_query:', err);
+    });
+    return;
+  }
+
+  const attemptId = rawPayload.substring(8);
+
+  try {
+    const attempt = await prisma.starsPaymentAttempt.findUnique({
+      where: { id: attemptId },
+    });
+
+    if (!attempt) {
+      await ctx.answerPreCheckoutQuery(false, 'Your cart has expired. Please return to BuddyStore and create a new order.');
+      return;
+    }
+
+    if (attempt.paid) {
+      // Already paid (double-pay attempt) — reject gracefully
+      await ctx.answerPreCheckoutQuery(false, 'This order has already been paid. Please check your BuddyStore dashboard.');
+      return;
+    }
+
+    const items = attempt.items as { category: string; count: number; botId: string }[];
+
+    // Check available stock for each item (total videos - already received by this user)
+    const stockChecks = await Promise.all(
+      items.map(async (item) => {
+        const [totalVideos, alreadyReceived] = await Promise.all([
+          prisma.videos.count({ where: { category: item.category } }),
+          prisma.videoDelivery.count({ where: { userId: attempt.userId, video: { category: item.category } } }),
+        ]);
+        const available = Math.max(0, totalVideos - alreadyReceived);
+        return { category: item.category, needed: item.count, available };
+      })
+    );
+
+    const outOfStock = stockChecks.filter(s => s.available < s.needed);
+
+    if (outOfStock.length > 0) {
+      const names = outOfStock.map(s => `${s.category} (need ${s.needed}, have ${s.available})`).join(', ');
+      console.warn(`[MainBot] pre_checkout_query REJECTED — insufficient stock: ${names}`);
+      await ctx.answerPreCheckoutQuery(
+        false,
+        'Some items in your order are out of stock. Please return to BuddyStore, update your cart, and try again.'
+      );
+      return;
+    }
+
+    // All stock checks passed — accept the payment
+    await ctx.answerPreCheckoutQuery(true);
+  } catch (err) {
+    console.error('[MainBot] Error validating pre_checkout_query:', err);
+    // On unexpected error, accept anyway to avoid blocking the user from paying
+    // (delivery failure is recoverable; preventing payment on a stock error is not ideal)
+    await ctx.answerPreCheckoutQuery(true).catch(() => {});
+  }
 });
+
 
 /**
  * Step 2: Successful Payment
