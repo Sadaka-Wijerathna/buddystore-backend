@@ -1261,21 +1261,24 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
     }
 
     const decodedToken = jwt.decode(tokenData.id_token) as {
-      sub?: string | number;
-      given_name?: string;
-      family_name?: string;
+      sub?:                string;   // OIDC subject — may exceed PostgreSQL bigint, do NOT use as telegramId
+      id?:                 number;   // Actual Telegram numeric user ID — safe for bigint
+      given_name?:         string;
+      family_name?:        string;
       preferred_username?: string;
-      picture?: string;
+      picture?:            string;
     } | null;
 
-    if (!decodedToken || !decodedToken.sub) {
-      console.error('[telegramOidcCallback] Invalid id_token:', decodedToken);
+    // Use `id` (numeric Telegram user ID) — NOT `sub` which is an oversized OIDC identifier
+    // that exceeds PostgreSQL bigint max (9223372036854775807)
+    if (!decodedToken || !decodedToken.id) {
+      console.error('[telegramOidcCallback] Invalid id_token — missing id claim:', decodedToken);
       res.status(401).json({ success: false, message: 'Invalid ID token received from Telegram' });
       return;
     }
 
     // ── Step 2: Find or create user ───────────────────────────────────────────
-    const telegramId       = BigInt(decodedToken.sub);
+    const telegramId       = BigInt(decodedToken.id);  // id is the real Telegram user ID
     const incomingUsername = (decodedToken.preferred_username ?? '').toLowerCase();
 
     let isNewUser = false;
@@ -1284,11 +1287,11 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
     if (!user) {
       isNewUser = true;
 
-      let finalUsername = incomingUsername || `tg_${decodedToken.sub}`;
+      let finalUsername = incomingUsername || `tg_${decodedToken.id}`;
       const taken = incomingUsername
         ? await prisma.user.findUnique({ where: { telegramUsername: finalUsername } })
         : null;
-      if (taken) finalUsername = `${finalUsername}_${decodedToken.sub}`;
+      if (taken) finalUsername = `${finalUsername}_${decodedToken.id}`;
 
       const randomHash  = await bcrypt.hash(randomUUID() + randomUUID(), 12);
       const referralCode = randomUUID().split('-')[0].toUpperCase();
