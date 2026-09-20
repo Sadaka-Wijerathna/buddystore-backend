@@ -654,7 +654,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response): Promis
       if (telegramUserId && order.starsTransactionId) {
         try {
           // Telegram allows refunds within 21 days of the original payment.
-          await mainBot.api.refundStarPayment(telegramUserId, order.starsTransactionId);
+          await mainBot.api.refundStarPayment(parseInt(telegramUserId, 10), order.starsTransactionId);
           console.log(`[Admin] ⭐ Stars refunded for order ${order.id} → user ${telegramUserId}`);
 
           // Notify the user in Telegram
