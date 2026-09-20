@@ -13,72 +13,99 @@ mainBot.catch((err) => {
   console.error('[MainBot] ❌ Global Bot Error:', err);
 });
 
+// ─── Helper: get frontend URL ─────────────────────────────────────────────────
+function getFrontendUrl(): string {
+  return process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(',')[0]
+    : 'https://tgbuddy.store';
+}
+
+// ─── Helper: build standard quick-nav keyboard ───────────────────────────────
+function navKeyboard(frontendUrl: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .url('🛍 Shop', frontendUrl)
+    .url('📊 Dashboard', `${frontendUrl}/dashboard`)
+    .row()
+    .url('💰 Wallet', `${frontendUrl}/dashboard/wallet`)
+    .url('⚙️ Settings', `${frontendUrl}/dashboard/settings`);
+}
+
 // ─── Global Sync Middleware ───────────────────────────────────────────────────
-// Whenever a user interacts with the bot, we check if their username or name has changed
-// and silently update the database so they can always log in with their latest username.
+// Whenever a user interacts with the bot, we check if their username or name
+// has changed and silently update the database.
 mainBot.use(async (ctx, next) => {
   if (ctx.from && ctx.from.id) {
     // Fire and forget so we don't block the actual bot command
-    prisma.user.findUnique({ where: { telegramId: BigInt(ctx.from.id) }, select: { id: true, telegramUsername: true, firstName: true, lastName: true } })
-      .then(user => {
+    prisma.user
+      .findUnique({
+        where: { telegramId: BigInt(ctx.from.id) },
+        select: { id: true, telegramUsername: true, firstName: true, lastName: true },
+      })
+      .then((user) => {
         if (user) {
           const currentUsername = (ctx.from?.username || '').toLowerCase();
           const dbUsername = (user.telegramUsername || '').toLowerCase();
-          
+
           if (
-            currentUsername !== dbUsername || 
-            user.firstName !== ctx.from?.first_name || 
+            currentUsername !== dbUsername ||
+            user.firstName !== ctx.from?.first_name ||
             user.lastName !== (ctx.from?.last_name || null)
           ) {
             const isUsernameChanged = currentUsername && currentUsername !== dbUsername;
-            prisma.user.update({
-              where: { id: user.id },
-              data: {
-                telegramUsername: ctx.from?.username || user.telegramUsername, // use fallback if they removed it
-                firstName: ctx.from?.first_name,
-                lastName: ctx.from?.last_name || null,
-                ...(isUsernameChanged && {
-                  oldTelegramUsername: user.telegramUsername,
-                  usernameUpdatedAt: new Date(),
-                })
-              }
-            }).catch(() => {});
+            prisma.user
+              .update({
+                where: { id: user.id },
+                data: {
+                  telegramUsername: ctx.from?.username || user.telegramUsername,
+                  firstName: ctx.from?.first_name,
+                  lastName: ctx.from?.last_name || null,
+                  ...(isUsernameChanged && {
+                    oldTelegramUsername: user.telegramUsername,
+                    usernameUpdatedAt: new Date(),
+                  }),
+                },
+              })
+              .catch(() => {});
           }
         }
-      }).catch(() => {});
+      })
+      .catch(() => {});
   }
   return next();
 });
 
- mainBot.command('start', async (ctx: Context) => {
-  const payload = ctx.match as string | undefined; // The token passed in ?start=TOKEN
+// ─── /start Command ───────────────────────────────────────────────────────────
+mainBot.command('start', async (ctx: Context) => {
+  const payload = ctx.match as string | undefined;
   const from = ctx.from;
+  const frontendUrl = getFrontendUrl();
 
   if (!from) {
     await ctx.reply('⚠️ Could not identify your account. Please try again.');
     return;
   }
 
-  // If no token in start payload — auto-register or welcome back
+  // ── No payload: welcome back or new user ──────────────────────────────────
   if (!payload) {
-    const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
-
-    // Check if already has an account
     const existingUser = await prisma.user.findUnique({
       where: { telegramId: BigInt(from.id) },
       select: { id: true, firstName: true, telegramUsername: true },
     });
 
     if (existingUser) {
-      // Already registered — welcome back
+      const kb = new InlineKeyboard()
+        .url('📊 Go to Dashboard', `${frontendUrl}/dashboard`)
+        .row()
+        .url('🛍 Shop Videos', frontendUrl)
+        .url('💰 My Wallet', `${frontendUrl}/dashboard/wallet`);
+
       await ctx.reply(
-        `👋 Welcome back, ${existingUser.firstName}!\n\nYou already have a BuddyStore account.\n\n🔗 Login at: ${frontendUrl}/login`,
-        { parse_mode: 'Markdown' }
+        `👋 Welcome back, *${existingUser.firstName}!*\n\nYou already have a BuddyStore account. What would you like to do?`,
+        { parse_mode: 'Markdown', reply_markup: kb }
       );
       return;
     }
 
-    // No account — check they have a username (required by schema)
     if (!from.username) {
       await ctx.reply(
         `👋 Welcome to BuddyStore!\n\n⚠️ *You need a Telegram username to create an account.*\n\nPlease go to Telegram Settings → Set a username, then come back and send /start again.`,
@@ -87,21 +114,23 @@ mainBot.use(async (ctx, next) => {
       return;
     }
 
-    // Check username not already taken by another user
     const usernameTaken = await prisma.user.findUnique({
       where: { telegramUsername: from.username.toLowerCase() },
     });
     if (usernameTaken) {
+      const kb = new InlineKeyboard().url('🔗 Login Now', `${frontendUrl}/login`);
       await ctx.reply(
-        `⚠️ A BuddyStore account already exists for @${from.username}.\n\nIf this is your account, please log in at ${frontendUrl}/login`,
+        `⚠️ A BuddyStore account already exists for @${from.username}.\n\nIf this is your account, please log in:`,
+        { reply_markup: kb }
       );
       return;
     }
 
-    // ── Auto-create account ──────────────────────────────────────────────────
-    // Generate a readable temp password: BStore_ + 8 random alphanumeric chars
+    // ── Auto-create account ────────────────────────────────────────────────
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-    const tempPassword = 'BStore_' + Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const tempPassword =
+      'BStore_' +
+      Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
     const passwordHash = await bcrypt.hash(tempPassword, 12);
     const referralCode = randomUUID().split('-')[0].toUpperCase();
 
@@ -119,32 +148,36 @@ mainBot.use(async (ctx, next) => {
         },
       });
 
+      const kb = new InlineKeyboard()
+        .url('🔗 Login Now', `${frontendUrl}/login`)
+        .row()
+        .url('🔒 Change Password', `${frontendUrl}/dashboard/settings`);
+
       await ctx.reply(
-        `✅ *Account Created!*\n\nHello, ${from.first_name}! Your BuddyStore account has been set up by the admin.\n\n` +
-        `👤 *Username:* @${from.username}\n` +
-        `🔐 *Temporary Password:* \`${tempPassword}\`\n\n` +
-        `⚠️ Please change your password after logging in:\n` +
-        `🔗 ${frontendUrl}/login → Settings → Change Password\n\n` +
-        `Your order will be placed shortly. Videos will be delivered here! 🎬`,
-        { parse_mode: 'Markdown' }
+        `✅ *Account Created!*\n\nHello, ${from.first_name}! Your BuddyStore account has been set up.\n\n` +
+          `👤 *Username:* @${from.username}\n` +
+          `🔐 *Temporary Password:* \`${tempPassword}\`\n\n` +
+          `⚠️ Please change your password after logging in.\n\n` +
+          `Videos will be delivered here after you place an order! 🎬`,
+        { parse_mode: 'Markdown', reply_markup: kb }
       );
     } catch (createErr) {
       console.error('[MainBot] Auto-registration failed:', createErr);
-      await ctx.reply(
-        `❌ Something went wrong setting up your account. Please contact the admin.`
-      );
+      await ctx.reply(`❌ Something went wrong setting up your account. Please contact the admin.`);
     }
     return;
   }
 
-  // Handle preview video delivery
+  // ── Preview video delivery ─────────────────────────────────────────────────
   if (payload.startsWith('preview_')) {
     const videoId = payload.replace('preview_', '').trim();
     try {
       const video = await prisma.videos.findUnique({ where: { id: videoId } });
       if (video) {
+        const kb = new InlineKeyboard().url('🛍 Browse More', frontendUrl);
         await ctx.replyWithVideo(video.fileId, {
-          caption: 'Here is the video you requested from the gallery preview! 🎁'
+          caption: 'Here is the video you requested from the gallery preview! 🎁',
+          reply_markup: kb,
         });
       } else {
         await ctx.reply('❌ Video not found or no longer available.');
@@ -156,10 +189,8 @@ mainBot.use(async (ctx, next) => {
     return;
   }
 
-  // Look up the registration token
-  const regToken = await prisma.registrationToken.findUnique({
-    where: { token: payload },
-  });
+  // ── Registration token verification ───────────────────────────────────────
+  const regToken = await prisma.registrationToken.findUnique({ where: { token: payload } });
 
   if (!regToken) {
     await ctx.reply('❌ Invalid or expired verification link. Please start the registration again.');
@@ -167,18 +198,21 @@ mainBot.use(async (ctx, next) => {
   }
 
   if (new Date() > regToken.expiresAt) {
-    await ctx.reply('⏰ This link has expired. Please go back to the website and restart registration.');
+    const kb = new InlineKeyboard().url('🔄 Start Over', `${frontendUrl}/register`);
+    await ctx.reply('⏰ This link has expired. Please restart registration:', {
+      reply_markup: kb,
+    });
     return;
   }
 
   if (regToken.verified) {
-    await ctx.reply('✅ Already verified! Go back to the website to complete your registration.');
+    const kb = new InlineKeyboard().url('✅ Complete Registration', `${frontendUrl}/register`);
+    await ctx.reply('✅ Already verified! Go back to the website to complete registration.', {
+      reply_markup: kb,
+    });
     return;
   }
 
-  // ── Username mismatch check ──────────────────────────────────────────────────
-  // The person who starts the bot MUST be the same account entered in Step 1.
-  // Compare case-insensitively since Telegram usernames are case-insensitive.
   const botStarter = (from.username ?? '').toLowerCase();
   const expectedUsername = regToken.telegramUsername.toLowerCase();
 
@@ -197,17 +231,15 @@ mainBot.use(async (ctx, next) => {
     return;
   }
 
-  // Check if a user with this telegram_id already exists
-  const existingUser = await prisma.user.findUnique({
-    where: { telegramId: BigInt(from.id) },
-  });
-
+  const existingUser = await prisma.user.findUnique({ where: { telegramId: BigInt(from.id) } });
   if (existingUser) {
-    await ctx.reply('⚠️ This Telegram account is already registered. Please log in on the website.');
+    const kb = new InlineKeyboard().url('🔗 Login', `${frontendUrl}/login`);
+    await ctx.reply('⚠️ This Telegram account is already registered. Please log in:', {
+      reply_markup: kb,
+    });
     return;
   }
 
-  // Update the token with collected user info and mark as verified
   await prisma.registrationToken.update({
     where: { token: payload },
     data: {
@@ -219,15 +251,16 @@ mainBot.use(async (ctx, next) => {
     },
   });
 
+  const kb = new InlineKeyboard().url('✅ Complete Registration', `${frontendUrl}/register`);
   await ctx.reply(
     `✅ *Verified!*\n\nHello, ${from.first_name}! 🎉\n\nYour account has been linked. Go back to the website to set your password and complete registration.`,
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'Markdown', reply_markup: kb }
   );
 });
 
 // ─── /help Command ────────────────────────────────────────────────────────────
 mainBot.command('help', async (ctx: Context) => {
-  const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
+  const frontendUrl = getFrontendUrl();
 
   const helpMessage = `
 🛍️ *Welcome to BuddyStore!*
@@ -236,7 +269,7 @@ _Your #1 Telegram video store_
 ━━━━━━━━━━━━━━━━━━━━
 🔐 *How to Get Started*
 ━━━━━━━━━━━━━━━━━━━━
-1️⃣ Go to [tgbuddy.store](${frontendUrl}/register)
+1️⃣ Visit BuddyStore and register
 2️⃣ Enter your *Telegram username*
 3️⃣ Click the verification link sent here
 4️⃣ Set your password — you're in! ✅
@@ -244,7 +277,7 @@ _Your #1 Telegram video store_
 ━━━━━━━━━━━━━━━━━━━━
 🎬 *How to Buy Videos*
 ━━━━━━━━━━━━━━━━━━━━
-• Browse our video categories on the website
+• Browse video categories on the website
 • Add packs to your cart 🛒
 • Choose your payment method and checkout
 • Videos are delivered *directly in this chat* 📩
@@ -259,51 +292,229 @@ _Your #1 Telegram video store_
 ━━━━━━━━━━━━━━━━━━━━
 📦 *Video Delivery*
 ━━━━━━━━━━━━━━━━━━━━
-• After payment is confirmed, videos are sent here automatically
+• Videos sent here automatically after confirmation
 • Delivery starts within seconds of order confirmation
-• Each video pack contains the exact count you purchased
-
-━━━━━━━━━━━━━━━━━━━━
-📊 *Manage Your Account*
-━━━━━━━━━━━━━━━━━━━━
-• View orders & history → [Dashboard](${frontendUrl}/dashboard)
-• Check your balance & top up → [Wallet](${frontendUrl}/dashboard/wallet)
-• Browse all categories → [Shop](${frontendUrl})
-
-━━━━━━━━━━━━━━━━━━━━
-🆘 *Need Help?*
-━━━━━━━━━━━━━━━━━━━━
-Contact our support or visit the website for more info.
-
-🌐 [tgbuddy.store](${frontendUrl})
+• Each pack contains the exact count you purchased
 `.trim();
+
+  const kb = new InlineKeyboard()
+    .url('🛍 Shop Now', frontendUrl)
+    .url('📊 Dashboard', `${frontendUrl}/dashboard`)
+    .row()
+    .url('💰 My Wallet', `${frontendUrl}/dashboard/wallet`)
+    .url('⚙️ Settings', `${frontendUrl}/dashboard/settings`);
 
   await ctx.reply(helpMessage, {
     parse_mode: 'Markdown',
+    reply_markup: kb,
     link_preview_options: { is_disabled: true },
   });
 });
 
-
-mainBot.on('message', async (ctx: Context) => {
+// ─── /settings Command ────────────────────────────────────────────────────────
+mainBot.command('settings', async (ctx: Context) => {
   const from = ctx.from;
   if (!from) return;
+  const frontendUrl = getFrontendUrl();
 
   const user = await prisma.user.findUnique({
     where: { telegramId: BigInt(from.id) },
+    select: {
+      firstName: true,
+      lastName: true,
+      telegramUsername: true,
+      role: true,
+      walletBalance: true,
+      createdAt: true,
+    },
   });
 
-  const frontendUrl = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',')[0] : 'https://tgbuddy.store';
+  if (!user) {
+    const kb = new InlineKeyboard().url('📝 Register Now', `${frontendUrl}/register`);
+    await ctx.reply(
+      `⚠️ *No BuddyStore account found.*\n\nRegister to get started!`,
+      { parse_mode: 'Markdown', reply_markup: kb, link_preview_options: { is_disabled: true } }
+    );
+    return;
+  }
+
+  const memberSince = user.createdAt.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  const balance = Number(user.walletBalance).toFixed(2);
+
+  const settingsMessage = `
+⚙️ *Your BuddyStore Account*
+
+━━━━━━━━━━━━━━━━━━━━
+👤 *Profile*
+━━━━━━━━━━━━━━━━━━━━
+• Name: ${user.firstName}${user.lastName ? ' ' + user.lastName : ''}
+• Username: @${user.telegramUsername || 'not set'}
+• Member Since: ${memberSince}
+• Role: ${user.role === 'ADMIN' ? '🔑 Admin' : '👤 User'}
+
+━━━━━━━━━━━━━━━━━━━━
+💰 *Wallet Balance*
+━━━━━━━━━━━━━━━━━━━━
+• Balance: \$${balance}
+`.trim();
+
+  const kb = new InlineKeyboard()
+    .url('📊 Dashboard', `${frontendUrl}/dashboard`)
+    .url('💰 Top Up', `${frontendUrl}/dashboard/wallet`)
+    .row()
+    .url('🔒 Change Password', `${frontendUrl}/dashboard/settings`)
+    .url('🛍 Shop', frontendUrl);
+
+  await ctx.reply(settingsMessage, {
+    parse_mode: 'Markdown',
+    reply_markup: kb,
+    link_preview_options: { is_disabled: true },
+  });
+});
+
+// ─── /balance Command ─────────────────────────────────────────────────────────
+mainBot.command('balance', async (ctx: Context) => {
+  const from = ctx.from;
+  if (!from) return;
+  const frontendUrl = getFrontendUrl();
+
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(from.id) },
+    select: { firstName: true, walletBalance: true },
+  });
+
+  if (!user) {
+    const kb = new InlineKeyboard().url('📝 Register', `${frontendUrl}/register`);
+    await ctx.reply('⚠️ No BuddyStore account found.', { reply_markup: kb });
+    return;
+  }
+
+  const balance = Number(user.walletBalance).toFixed(2);
+  const kb = new InlineKeyboard()
+    .url('💳 Top Up Wallet', `${frontendUrl}/dashboard/wallet`)
+    .row()
+    .url('🛍 Shop Videos', frontendUrl);
+
+  await ctx.reply(
+    `💰 *Wallet Balance*\n\nHi ${user.firstName}!\n\nYour current balance: *\$${balance}*`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+});
+
+// ─── /orders Command ──────────────────────────────────────────────────────────
+mainBot.command('orders', async (ctx: Context) => {
+  const from = ctx.from;
+  if (!from) return;
+  const frontendUrl = getFrontendUrl();
+
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(from.id) },
+    select: { id: true, firstName: true },
+  });
+
+  if (!user) {
+    const kb = new InlineKeyboard().url('📝 Register', `${frontendUrl}/register`);
+    await ctx.reply('⚠️ No BuddyStore account found.', { reply_markup: kb });
+    return;
+  }
+
+  const orders = await prisma.order.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: {
+      id: true,
+      category: true,
+      videoCount: true,
+      status: true,
+      paymentMethod: true,
+      createdAt: true,
+    },
+  });
+
+  if (orders.length === 0) {
+    const kb = new InlineKeyboard().url('🛍 Place First Order', frontendUrl);
+    await ctx.reply(
+      `📦 *No orders yet, ${user.firstName}!*\n\nVisit BuddyStore to place your first order.`,
+      { parse_mode: 'Markdown', reply_markup: kb }
+    );
+    return;
+  }
+
+  const statusEmoji: Record<string, string> = {
+    PENDING: '⏳',
+    CONFIRMED: '✅',
+    PROCESSING: '🔄',
+    DELIVERED: '📦',
+    CANCELLED: '❌',
+    PENDING_PAYMENT: '💳',
+    FAILED: '❗',
+  };
+
+  const lines = orders.map((o, i) => {
+    const emoji = statusEmoji[o.status] ?? '❓';
+    const date = o.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `${i + 1}. ${emoji} *${o.category}* — ${o.videoCount} videos\n   ${o.status} · ${o.paymentMethod} · ${date}`;
+  });
+
+  const kb = new InlineKeyboard()
+    .url('📊 View All Orders', `${frontendUrl}/dashboard/orders`)
+    .row()
+    .url('🛍 Shop More', frontendUrl);
+
+  await ctx.reply(
+    `📦 *Your Recent Orders*\n\n${lines.join('\n\n')}`,
+    { parse_mode: 'Markdown', reply_markup: kb }
+  );
+});
+
+// ─── Catch-all Message Handler ────────────────────────────────────────────────
+// Handles any plain text/message that isn't a command.
+mainBot.on('message', async (ctx: Context) => {
+  const from = ctx.from;
+  if (!from) return;
+  const frontendUrl = getFrontendUrl();
+
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(from.id) },
+    select: { firstName: true, walletBalance: true },
+  });
+
   if (user) {
-    await ctx.reply(`👋 Hi ${user.firstName}! Visit ${frontendUrl}/dashboard to manage your account.`);
+    // Registered user — show quick action keyboard
+    const balance = Number(user.walletBalance).toFixed(2);
+    const kb = new InlineKeyboard()
+      .url('📊 Dashboard', `${frontendUrl}/dashboard`)
+      .url('🛍 Shop', frontendUrl)
+      .row()
+      .url('💰 Wallet ($' + balance + ')', `${frontendUrl}/dashboard/wallet`)
+      .url('📦 My Orders', `${frontendUrl}/dashboard/orders`);
+
+    await ctx.reply(
+      `👋 Hi *${user.firstName}!*\n\nUse the buttons below or type a command:\n/help · /balance · /orders · /settings`,
+      { parse_mode: 'Markdown', reply_markup: kb }
+    );
   } else {
-    await ctx.reply(`👋 Welcome! Register at ${frontendUrl}/register to get started.`);
+    // Unregistered user — prompt to register
+    const kb = new InlineKeyboard()
+      .url('📝 Create Account', `${frontendUrl}/register`)
+      .row()
+      .url('🔗 Login', `${frontendUrl}/login`);
+
+    await ctx.reply(
+      `👋 Welcome to *BuddyStore!*\n\nI don't have an account linked to this Telegram. Register to start buying videos! 🎬`,
+      { parse_mode: 'Markdown', reply_markup: kb }
+    );
   }
 });
 
 // ─── Telegram Stars Payment Handlers ──────────────────────────────────────────
 
-/** 
+/**
  * Step 1: Pre-Checkout Query
  * Telegram asks the bot if we want to accept this payment.
  * We validate stock before answering — if a category ran out between invoice
@@ -324,39 +535,45 @@ mainBot.on('pre_checkout_query', async (ctx) => {
   const attemptId = rawPayload.substring(8);
 
   try {
-    const attempt = await prisma.starsPaymentAttempt.findUnique({
-      where: { id: attemptId },
-    });
+    const attempt = await prisma.starsPaymentAttempt.findUnique({ where: { id: attemptId } });
 
     if (!attempt) {
-      await ctx.answerPreCheckoutQuery(false, 'Your cart has expired. Please return to BuddyStore and create a new order.');
+      await ctx.answerPreCheckoutQuery(
+        false,
+        'Your cart has expired. Please return to BuddyStore and create a new order.'
+      );
       return;
     }
 
     if (attempt.paid) {
-      // Already paid (double-pay attempt) — reject gracefully
-      await ctx.answerPreCheckoutQuery(false, 'This order has already been paid. Please check your BuddyStore dashboard.');
+      await ctx.answerPreCheckoutQuery(
+        false,
+        'This order has already been paid. Please check your BuddyStore dashboard.'
+      );
       return;
     }
 
     const items = attempt.items as { category: string; count: number; botId: string }[];
 
-    // Check available stock for each item (total videos - already received by this user)
     const stockChecks = await Promise.all(
       items.map(async (item) => {
         const [totalVideos, alreadyReceived] = await Promise.all([
           prisma.videos.count({ where: { category: item.category } }),
-          prisma.videoDelivery.count({ where: { userId: attempt.userId, video: { category: item.category } } }),
+          prisma.videoDelivery.count({
+            where: { userId: attempt.userId, video: { category: item.category } },
+          }),
         ]);
         const available = Math.max(0, totalVideos - alreadyReceived);
         return { category: item.category, needed: item.count, available };
       })
     );
 
-    const outOfStock = stockChecks.filter(s => s.available < s.needed);
+    const outOfStock = stockChecks.filter((s) => s.available < s.needed);
 
     if (outOfStock.length > 0) {
-      const names = outOfStock.map(s => `${s.category} (need ${s.needed}, have ${s.available})`).join(', ');
+      const names = outOfStock
+        .map((s) => `${s.category} (need ${s.needed}, have ${s.available})`)
+        .join(', ');
       console.warn(`[MainBot] pre_checkout_query REJECTED — insufficient stock: ${names}`);
       await ctx.answerPreCheckoutQuery(
         false,
@@ -365,16 +582,12 @@ mainBot.on('pre_checkout_query', async (ctx) => {
       return;
     }
 
-    // All stock checks passed — accept the payment
     await ctx.answerPreCheckoutQuery(true);
   } catch (err) {
     console.error('[MainBot] Error validating pre_checkout_query:', err);
-    // On unexpected error, accept anyway to avoid blocking the user from paying
-    // (delivery failure is recoverable; preventing payment on a stock error is not ideal)
     await ctx.answerPreCheckoutQuery(true).catch(() => {});
   }
 });
-
 
 /**
  * Step 2: Successful Payment
@@ -382,8 +595,9 @@ mainBot.on('pre_checkout_query', async (ctx) => {
  */
 mainBot.on('message:successful_payment', async (ctx) => {
   const payment = ctx.message.successful_payment;
-  const rawPayload = payment.invoice_payload; // We store order IDs
+  const rawPayload = payment.invoice_payload;
   const telegramPaymentId = payment.telegram_payment_charge_id;
+  const frontendUrl = getFrontendUrl();
 
   if (!rawPayload) return;
 
@@ -391,32 +605,35 @@ mainBot.on('message:successful_payment', async (ctx) => {
     if (rawPayload.startsWith('attempt:')) {
       const attemptId = rawPayload.substring(8);
       console.log(`[MainBot] ⭐️ Payment Received for attempt: ${attemptId}`);
-      
-      const attempt = await prisma.starsPaymentAttempt.findUnique({
-        where: { id: attemptId }
-      });
+
+      const attempt = await prisma.starsPaymentAttempt.findUnique({ where: { id: attemptId } });
 
       if (!attempt) {
         console.error(`[MainBot] Stars attempt ${attemptId} not found!`);
-        await ctx.reply('⚠️ Payment received, but we could not find your cart data. Please return to the website and contact support if your order is not confirmed.');
+        await ctx.reply(
+          '⚠️ Payment received, but we could not find your cart data. Please return to the website and contact support if your order is not confirmed.'
+        );
         return;
       }
 
-      // Mark as paid - order creation is now deferred to the frontend "Place Order" click
       await prisma.starsPaymentAttempt.update({
         where: { id: attemptId },
-        data: { 
-          paid: true,
-          starsTransactionId: telegramPaymentId
-        }
+        data: { paid: true, starsTransactionId: telegramPaymentId },
       });
 
-      await ctx.reply(`✅ *Payment Received!* ⭐️\n\nYour payment has been verified. Please return to the BuddyStore website to complete your order!`, { parse_mode: 'Markdown' });
+      const kb = new InlineKeyboard()
+        .url('📦 Complete Order', `${frontendUrl}/dashboard`)
+        .row()
+        .url('📊 View Dashboard', `${frontendUrl}/dashboard`);
 
+      await ctx.reply(
+        `✅ *Payment Received!* ⭐️\n\nYour Stars payment has been verified. Please return to the BuddyStore website to complete your order!`,
+        { parse_mode: 'Markdown', reply_markup: kb }
+      );
     } else {
       // BACKWARDS COMPATIBILITY: Support old batch: format
-      const orderIdsArr = rawPayload.startsWith('batch:') 
-        ? rawPayload.substring(6).split(',') 
+      const orderIdsArr = rawPayload.startsWith('batch:')
+        ? rawPayload.substring(6).split(',')
         : rawPayload.split(',');
 
       console.log(`[MainBot] ⭐️ Payment Successful for existing batch: ${orderIdsArr.join(',')}`);
@@ -426,13 +643,13 @@ mainBot.on('message:successful_payment', async (ctx) => {
         data: {
           status: 'CONFIRMED',
           confirmedAt: new Date(),
-          starsTransactionId: telegramPaymentId
-        }
+          starsTransactionId: telegramPaymentId,
+        },
       });
 
       const orders = await prisma.order.findMany({
         where: { id: { in: orderIdsArr } },
-        include: { user: true }
+        include: { user: true },
       });
 
       for (const o of orders) {
@@ -449,27 +666,35 @@ mainBot.on('message:successful_payment', async (ctx) => {
         );
       }
 
-      await ctx.reply(`✅ *Payment Successful!* ⭐️\n\nYour orders have been created and confirmed. The bot will start sending your videos in this chat immediately!`, { parse_mode: 'Markdown' });
-    }
+      const kb = new InlineKeyboard()
+        .url('📦 View Orders', `${frontendUrl}/dashboard/orders`)
+        .row()
+        .url('🛍 Shop More', frontendUrl);
 
+      await ctx.reply(
+        `✅ *Payment Successful!* ⭐️\n\nYour orders have been confirmed. Videos will be delivered in this chat shortly! 🎬`,
+        { parse_mode: 'Markdown', reply_markup: kb }
+      );
+    }
   } catch (err) {
     console.error('[MainBot] Error processing successful payment:', err);
-    await ctx.reply('⚠️ Your payment was successful, but we encountered an error setting up your delivery. Please contact support.');
+    await ctx.reply(
+      '⚠️ Your payment was successful, but we encountered an error setting up your delivery. Please contact support.'
+    );
   }
 });
-
-
 
 // ─── Webhook Registration ─────────────────────────────────────────────────────
 // Called once on server startup. Tells Telegram to push all updates
 // to our HTTPS endpoint instead of us polling getUpdates continuously.
-// This eliminates 409 Conflict errors on Render restarts entirely.
 export const registerMainBotWebhook = async (baseUrl: string, secret?: string): Promise<void> => {
   if (!config.bots.main) {
     console.warn('⚠️  MAIN_BOT_TOKEN not set — main bot webhook not registered');
     return;
   }
   const webhookUrl = `${baseUrl}/webhooks/main`;
+  const frontendUrl = getFrontendUrl();
+
   console.log(`🤖 Registering Main Bot webhook → ${webhookUrl}`);
   try {
     await mainBot.api.setWebhook(webhookUrl, {
@@ -479,6 +704,35 @@ export const registerMainBotWebhook = async (baseUrl: string, secret?: string): 
     console.log('✅ Main Bot webhook registered');
   } catch (err: any) {
     console.error(`❌ Main Bot: Failed to register webhook — ${err.message}`);
+  }
+
+  // Register bot commands so they appear in the "/" suggestion menu and on
+  // the bot's profile page (Help & Settings links shown by Telegram automatically)
+  try {
+    await mainBot.api.setMyCommands([
+      { command: 'start',    description: 'Start / link your BuddyStore account' },
+      { command: 'help',     description: 'How BuddyStore works & payment methods' },
+      { command: 'balance',  description: 'Check your wallet balance' },
+      { command: 'orders',   description: 'View your last 5 orders' },
+      { command: 'settings', description: 'View your account info & quick links' },
+    ]);
+    console.log('✅ Main Bot commands registered');
+  } catch (err: any) {
+    console.error(`❌ Main Bot: Failed to register commands — ${err.message}`);
+  }
+
+  // Set the chat menu button to open BuddyStore directly — one tap from any chat
+  try {
+    await mainBot.api.setChatMenuButton({
+      menu_button: {
+        type: 'web_app',
+        text: '🛍 BuddyStore',
+        web_app: { url: frontendUrl },
+      },
+    });
+    console.log('✅ Main Bot menu button set → BuddyStore');
+  } catch (err: any) {
+    console.error(`❌ Main Bot: Failed to set menu button — ${err.message}`);
   }
 };
 
