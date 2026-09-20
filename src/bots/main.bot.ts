@@ -266,33 +266,23 @@ mainBot.command('help', async (ctx: Context) => {
 🛍️ *Welcome to BuddyStore!*
 _Your #1 Telegram video store_
 
-━━━━━━━━━━━━━━━━━━━━
-🔐 *How to Get Started*
-━━━━━━━━━━━━━━━━━━━━
+*Getting Started*
 1️⃣ Visit BuddyStore and register
-2️⃣ Enter your *Telegram username*
+2️⃣ Enter your Telegram username
 3️⃣ Click the verification link sent here
 4️⃣ Set your password — you're in! ✅
 
-━━━━━━━━━━━━━━━━━━━━
-🎬 *How to Buy Videos*
-━━━━━━━━━━━━━━━━━━━━
+*How to Buy Videos*
 • Browse video categories on the website
-• Add packs to your cart 🛒
-• Choose your payment method and checkout
-• Videos are delivered *directly in this chat* 📩
+• Add packs to your cart and checkout
+• Videos are delivered directly in this chat 📩
 
-━━━━━━━━━━━━━━━━━━━━
-💳 *Payment Methods*
-━━━━━━━━━━━━━━━━━━━━
-⭐ *Telegram Stars* — Instant, no hassle
-💰 *Crypto* — USDT & more accepted
-🏦 *Bank Transfer* — Manual verification
+*Payment Methods*
+⭐ Telegram Stars — Instant
+💰 Crypto — USDT & more
+🏦 Bank Transfer — Manual verification
 
-━━━━━━━━━━━━━━━━━━━━
-📦 *Video Delivery*
-━━━━━━━━━━━━━━━━━━━━
-• Videos sent here automatically after confirmation
+*Video Delivery*
 • Delivery starts within seconds of order confirmation
 • Each pack contains the exact count you purchased
 `.trim();
@@ -346,27 +336,21 @@ mainBot.command('settings', async (ctx: Context) => {
   const balance = Number(user.walletBalance).toFixed(2);
 
   const settingsMessage = `
-⚙️ *Your BuddyStore Account*
+*Your BuddyStore Account*
 
-━━━━━━━━━━━━━━━━━━━━
-👤 *Profile*
-━━━━━━━━━━━━━━━━━━━━
-• Name: ${user.firstName}${user.lastName ? ' ' + user.lastName : ''}
-• Username: @${user.telegramUsername || 'not set'}
-• Member Since: ${memberSince}
-• Role: ${user.role === 'ADMIN' ? '🔑 Admin' : '👤 User'}
+👤 Name: ${user.firstName}${user.lastName ? ' ' + user.lastName : ''}
+🔖 Username: @${user.telegramUsername || 'not set'}
+📅 Member Since: ${memberSince}
+🔑 Role: ${user.role === 'ADMIN' ? 'Admin' : 'User'}
 
-━━━━━━━━━━━━━━━━━━━━
-💰 *Wallet Balance*
-━━━━━━━━━━━━━━━━━━━━
-• Balance: \$${balance}
+💰 Wallet Balance: *\$${balance}*
 `.trim();
 
   const kb = new InlineKeyboard()
     .url('📊 Dashboard', `${frontendUrl}/dashboard`)
     .url('💰 Top Up', `${frontendUrl}/dashboard/wallet`)
     .row()
-    .url('🔒 Change Password', `${frontendUrl}/dashboard/settings`)
+    .url('👤 Edit Profile', `${frontendUrl}/dashboard/profile`)
     .url('🛍 Shop', frontendUrl);
 
   await ctx.reply(settingsMessage, {
