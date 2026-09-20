@@ -1376,3 +1376,60 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
+
+// ─── Delete Account ──────────────────────────────────────────────────────────
+/**
+ * DELETE /auth/me
+ * Hard-deletes the authenticated user's own account.
+ * Requires the user to type 'DELETE' as a confirmation step.
+ * Sends a farewell message on Telegram before wiping the record.
+ */
+export const deleteAccount = async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user?.id;
+  if (!userId) {
+    res.status(401).json({ success: false, message: 'Not authenticated' });
+    return;
+  }
+
+  const expectedConfirmation = `delete ${req.user.telegramUsername}`.toUpperCase();
+  const { confirmation } = req.body as { confirmation?: string };
+  
+  if (!confirmation || confirmation.trim().toUpperCase() !== expectedConfirmation) {
+    res.status(400).json({ success: false, message: `Please type "delete ${req.user.telegramUsername}" to confirm` });
+    return;
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, telegramId: true, firstName: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    // Send farewell message via Telegram before deletion
+    if (user.telegramId) {
+      const bot = getMainBot();
+      if (bot) {
+        await bot.api
+          .sendMessage(
+            user.telegramId.toString(),
+            `👋 *Your BuddyStore account has been deleted.*\n\nWe're sorry to see you go, ${user.firstName}. All your data has been permanently removed.\n\nIf you ever change your mind, you can always create a new account at BuddyStore! 🛍️`,
+            { parse_mode: 'Markdown' }
+          )
+          .catch(() => {/* ignore — user may have blocked the bot */});
+      }
+    }
+
+    // Hard delete — Prisma cascade rules handle related records
+    await prisma.user.delete({ where: { id: userId } });
+
+    res.json({ success: true, message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('[deleteAccount]', error);
+    res.status(500).json({ success: false, message: 'Server error while deleting account' });
+  }
+};

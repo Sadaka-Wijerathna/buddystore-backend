@@ -48,5 +48,8 @@ router.get('/me/balance', authenticate, authController.getBalance);
 // Fetch the user's Telegram profile photo URL
 router.get('/me/photo', authenticate, authController.getPhoto);
 
+// Delete the authenticated user's own account (requires password confirmation)
+router.delete('/me', authenticate, authController.deleteAccount);
+
 export default router;
 

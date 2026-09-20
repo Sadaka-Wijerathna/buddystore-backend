@@ -456,12 +456,63 @@ mainBot.command('orders', async (ctx: Context) => {
   );
 });
 
+// ─── /deleteaccount Command ───────────────────────────────────────────────────
+// Two-step flow: first message asks for confirmation, second message (YES)
+// triggers the actual account deletion.
+const pendingDeleteConfirm = new Set<number>(); // telegram user IDs awaiting YES
+
+mainBot.command('deleteaccount', async (ctx: Context) => {
+  const from = ctx.from;
+  if (!from) return;
+
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(from.id) },
+    select: { id: true, firstName: true },
+  });
+
+  if (!user) {
+    await ctx.reply('⚠️ No BuddyStore account is linked to this Telegram account.');
+    return;
+  }
+
+  pendingDeleteConfirm.add(from.id);
+
+  await ctx.reply(
+    `⚠️ *Delete Your Account*\n\nAre you sure you want to permanently delete your BuddyStore account, *${user.firstName}*?\n\n` +
+      `This will:\n• Remove all your personal data\n• Erase your order history\n• Forfeit your wallet balance\n\n` +
+      `*This action cannot be undone.*\n\nReply with *YES* (in capitals) to confirm, or anything else to cancel.`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // ─── Catch-all Message Handler ────────────────────────────────────────────────
 // Handles any plain text/message that isn't a command.
 mainBot.on('message', async (ctx: Context) => {
   const from = ctx.from;
   if (!from) return;
   const frontendUrl = getFrontendUrl();
+
+  // ── Delete account confirmation step ──────────────────────────────────────
+  if (pendingDeleteConfirm.has(from.id)) {
+    pendingDeleteConfirm.delete(from.id);
+
+    const text = 'text' in (ctx.message ?? {}) ? (ctx.message as { text?: string }).text?.trim() : '';
+
+    if (text === 'YES') {
+      try {
+        await prisma.user.delete({ where: { telegramId: BigInt(from.id) } });
+        await ctx.reply(
+          `✅ *Account Deleted*\n\nYour BuddyStore account has been permanently removed. We're sorry to see you go!\n\nIf you ever change your mind, you can always register again. 👋`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch {
+        await ctx.reply('❌ Something went wrong while deleting your account. Please try again or contact support.');
+      }
+    } else {
+      await ctx.reply('✅ *Account deletion cancelled.* Your account is safe!', { parse_mode: 'Markdown' });
+    }
+    return;
+  }
 
   const user = await prisma.user.findUnique({
     where: { telegramId: BigInt(from.id) },
@@ -690,34 +741,9 @@ export const registerMainBotWebhook = async (baseUrl: string, secret?: string): 
     console.error(`❌ Main Bot: Failed to register webhook — ${err.message}`);
   }
 
-  // Register bot commands so they appear in the "/" suggestion menu and on
-  // the bot's profile page (Help & Settings links shown by Telegram automatically)
-  try {
-    await mainBot.api.setMyCommands([
-      { command: 'start',    description: 'Start / link your BuddyStore account' },
-      { command: 'help',     description: 'How BuddyStore works & payment methods' },
-      { command: 'balance',  description: 'Check your wallet balance' },
-      { command: 'orders',   description: 'View your last 5 orders' },
-      { command: 'settings', description: 'View your account info & quick links' },
-    ]);
-    console.log('✅ Main Bot commands registered');
-  } catch (err: any) {
-    console.error(`❌ Main Bot: Failed to register commands — ${err.message}`);
-  }
-
-  // Set the chat menu button to open BuddyStore directly — one tap from any chat
-  try {
-    await mainBot.api.setChatMenuButton({
-      menu_button: {
-        type: 'web_app',
-        text: '🛍 BuddyStore',
-        web_app: { url: frontendUrl },
-      },
-    });
-    console.log('✅ Main Bot menu button set → BuddyStore');
-  } catch (err: any) {
-    console.error(`❌ Main Bot: Failed to set menu button — ${err.message}`);
-  }
+  // ℹ️  Bot commands & menu button are managed manually via BotFather.
+  //     Do NOT call setMyCommands or setChatMenuButton here — doing so would
+  //     overwrite BotFather settings on every server restart.
 };
 
 // ─── Webhook Deregistration ───────────────────────────────────────────────────
