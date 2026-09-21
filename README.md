@@ -2,6 +2,14 @@
 
 Express + Prisma + Telegram bot backend for BuddyStore.
 
+## Features
+
+- **Robust REST API**: Built on Express.js with Prisma ORM.
+- **Telegram MTProto Integration**: For massive-scale bot management.
+- **Background Jobs**: BullMQ for reliable video delivery.
+- **Comprehensive Test Suite**: Jest + Supertest covering core logic without a live DB.
+- **API Documentation**: Interactive Swagger UI built-in.
+
 ## Quick Start
 
 ```bash
@@ -20,6 +28,25 @@ npm run seed:bots
 # 5. Start the dev server
 npm run dev
 ```
+
+## Testing
+
+The test suite uses `jest`, `ts-jest`, and `supertest`. The `PrismaClient` is fully mocked using `jest-mock-extended` so you do not need a live database to run the tests.
+
+```bash
+# Run the test suite once
+npm test
+
+# Run the test suite in watch mode
+npm run test:watch
+```
+
+## API Documentation
+
+Swagger UI is configured for this project. When running in development, navigate to:
+[http://localhost:4000/api/v1/docs](http://localhost:4000/api/v1/docs)
+
+All major endpoints are documented using JSDoc `@swagger` annotations inside `src/routes/`. To disable the docs in production, set `ENABLE_DOCS=false` in your `.env`.
 
 ## Required Environment Variables
 
@@ -43,6 +70,7 @@ See [`.env.example`](.env.example) for the full list. Key ones:
 | `npm run dev` | Start dev server with hot reload |
 | `npm run build` | Compile TypeScript + generate Prisma client |
 | `npm start` | Run compiled production build |
+| `npm test` | Run automated test suite |
 | `npm run seed:bots` | **Required first-time setup** — seed the 6 category bots |
 | `npm run set:admin` | Promote a user to admin role |
 | `npm run prisma:migrate` | Run Prisma migrations |
@@ -52,15 +80,17 @@ See [`.env.example`](.env.example) for the full list. Key ones:
 
 ```
 src/
+├── __tests__/      # Jest test files and mocks
 ├── bots/           # Telegram bot handlers (main + category bots)
 ├── config/         # App configuration (reads from .env)
 ├── controllers/    # Route handlers (auth, orders, admin, notifications)
 ├── jobs/           # BullMQ job queues (video delivery)
 ├── lib/            # Shared utilities (prisma, cloudinary, socket.io)
 ├── middleware/     # Express middleware (auth)
-├── routes/         # Express route definitions
+├── routes/         # Express route definitions (contains Swagger annotations)
 ├── scripts/        # One-off scripts (seed-bots, set-admin)
-├── app.ts          # Express app setup
+├── app.ts          # Express app setup (Swagger UI mounted here)
+├── swagger.ts      # Swagger / OpenAPI configuration
 └── server.ts       # Server entry point
 ```
 

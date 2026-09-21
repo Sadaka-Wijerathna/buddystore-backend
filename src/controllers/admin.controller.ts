@@ -203,9 +203,9 @@ export const toggleBotBadgeOnly = async (req: AuthRequest, res: Response): Promi
 export const updateBotSettings = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const { label, name, minVideoCount, pricePerVideo, collectVideos, collectPhotos, showPreviews, badgeOnly } = req.body;
+    const { label, name, token, minVideoCount, pricePerVideo, collectVideos, collectPhotos, showPreviews, badgeOnly } = req.body;
 
-    const data: { label?: string; name?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean; showPreviews?: boolean; badgeOnly?: boolean } = {};
+    const data: { label?: string; name?: string; token?: string; minVideoCount?: number; pricePerVideo?: number; collectVideos?: boolean; collectPhotos?: boolean; showPreviews?: boolean; badgeOnly?: boolean } = {};
 
     if (label !== undefined) {
       if (typeof label !== 'string' || !label.trim()) {
@@ -213,6 +213,19 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
         return;
       }
       data.label = label.trim();
+    }
+
+    if (token !== undefined) {
+      if (typeof token !== 'string' || !token.trim()) {
+        res.status(400).json({ success: false, message: 'Token cannot be empty' });
+        return;
+      }
+      // Basic Telegram token format: digits:alphanumeric
+      if (!/^\d+:[A-Za-z0-9_-]{35,}$/.test(token.trim())) {
+        res.status(400).json({ success: false, message: 'Invalid Telegram bot token format' });
+        return;
+      }
+      data.token = token.trim();
     }
 
     if (name !== undefined) {
@@ -266,6 +279,27 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
       where: { id },
       data,
     });
+
+    // If the token was updated, hot-swap the live bot instance
+    if (data.token) {
+      try {
+        const { registerCategoryBot, categoryBots } = await import('../bots/category.bot');
+        const config = await import('../config');
+        // Deregister old webhook before swapping
+        if (categoryBots[bot.category]?.hasToken) {
+          await categoryBots[bot.category].deregisterWebhook();
+        }
+        const newBotInstance = registerCategoryBot(bot.category, data.token, bot.name);
+        const baseUrl = config.default.webhookBaseUrl;
+        if (baseUrl && newBotInstance.hasToken) {
+          const slug = bot.name.replace(/^@/, '').toLowerCase();
+          await newBotInstance.registerWebhook(baseUrl, slug, config.default.webhookSecret);
+          console.log(`[updateBotSettings] ✅ Hot-swapped bot for category ${bot.category} with new token`);
+        }
+      } catch (swapErr) {
+        console.error('[updateBotSettings] ⚠️  Bot hot-swap failed (DB updated OK):', swapErr);
+      }
+    }
 
     res.json({
       success: true,
