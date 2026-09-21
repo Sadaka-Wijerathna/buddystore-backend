@@ -35,6 +35,7 @@ export const getBots = async (_req: AuthRequest, res: Response): Promise<void> =
         minVideoCount: bot.minVideoCount,
         pricePerVideo: bot.pricePerVideo,
         showPreviews: bot.showPreviews,
+        hasToken: !!bot.token, // indicates whether a token is saved (never expose the token itself)
       })),
     });
   } catch (error) {
@@ -220,8 +221,8 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
         res.status(400).json({ success: false, message: 'Token cannot be empty' });
         return;
       }
-      // Basic Telegram token format: digits:alphanumeric
-      if (!/^\d+:[A-Za-z0-9_-]{35,}$/.test(token.trim())) {
+      // Basic Telegram token format: digits:alphanumeric (token part is typically 35 chars but allow 30+)
+      if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token.trim())) {
         res.status(400).json({ success: false, message: 'Invalid Telegram bot token format' });
         return;
       }
@@ -301,10 +302,12 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
       }
     }
 
+    // Return sanitized bot object — never expose the raw token to the frontend
+    const { token: _omitToken, ...safeBot } = bot as typeof bot & { token?: string };
     res.json({
       success: true,
       message: `Settings updated for ${bot.label || bot.name}`,
-      data: bot,
+      data: { ...safeBot, hasToken: !!bot.token },
     });
   } catch (error: any) {
     if (error?.code === 'P2002') {

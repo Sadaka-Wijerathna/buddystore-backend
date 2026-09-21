@@ -459,8 +459,8 @@ export async function startImport(
   (async () => {
     try {
       await updateJobProgress(job.id, adminId, { message: 'Resolving handles...' }, 'Resolving...');
-      const sourceEntity = await tg.resolvePeer(sourceChat);
-      const targetEntity = await tg.resolvePeer(targetBot.replace(/^@+/, '@'));
+      const sourceEntity = await resolveEntity(tg, sourceChat, adminId);
+      const targetEntity = await resolveEntity(tg, targetBot.replace(/^@+/, '@'), adminId);
 
       const botHandle = targetBot.replace(/^@+/, '');
       const targetBotDb = await prisma.bot.findUnique({ where: { name: botHandle } });
@@ -644,7 +644,7 @@ export async function startImport(
 export async function countVideos(adminId: string, sourceChat: string): Promise<number> {
   const tg = await getConnectedClient(adminId);
   if (!tg) throw new Error('Not authenticated.');
-  const peer = await tg.resolvePeer(sourceChat);
+  const peer = await resolveEntity(tg, sourceChat, adminId);
   const result = await tg.call({
     _: 'messages.search',
     peer: peer as any,
