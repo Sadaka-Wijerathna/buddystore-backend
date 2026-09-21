@@ -746,6 +746,7 @@ export async function startImport(
       await updateJobProgress(job.id, adminId, { total: totalVideos, progress: startIndex }, `Forwarding ${totalVideos} videos...`);
 
       let processedCount = startIndex;
+      let videosSinceLastCooldown = 0;
 
       for (let i = startIndex; i < totalVideos; i++) {
         if (controller.stop) {
@@ -805,75 +806,84 @@ export async function startImport(
               }
             }
 
-            const stream = await tg.downloadAsStream(msg.media as any);
-
-            let fileName = `video_${msg.id}.mp4`;
-            if (msg.media.type === 'document' && (msg.media as any).fileName) {
-              fileName = (msg.media as any).fileName || fileName;
-            }
-
-            // ── Extract video attributes from the raw TL document ────────────
-            // msg.raw gives the raw TL message; the document lives in media.document.
-            const rawDoc: any =
-              (msg as any).raw?.media?.document ??
-              (msg.media as any).raw?.document ??
-              (msg.media as any).document;
-
-            const videoAttr: any = rawDoc?.attributes?.find(
-              (a: any) => a._ === 'documentAttributeVideo'
-            );
-            const duration: number  = videoAttr?.duration ?? 0;
-            const width: number     = videoAttr?.w        ?? 0;
-            const height: number    = videoAttr?.h        ?? 0;
-            const supportsStreaming: boolean = videoAttr?.supportsStreaming ?? true;
-
-            // ── Download the best available thumbnail ────────────────────────
-            // Telegram provides photoSize thumbs on documents. Pick the largest
-            // non-animated one (type 's'/'m'/'x'/'y') and download it.
-            let thumbBuffer: Buffer | undefined;
+            let stream: any = null;
             try {
-              const thumbs: any[] = rawDoc?.thumbs ?? [];
-              // Find a "photo" thumb (not animated/video strip which has _ === 'videoSize')
-              const bestThumb = thumbs
-                .filter((t: any) => t._ === 'photoSize' || t._ === 'photoStrippedSize' || t._ === 'photoSizeProgressive')
-                .sort((a: any, b: any) => (b.size ?? 0) - (a.size ?? 0))[0];
+              stream = await tg.downloadAsStream(msg.media as any);
 
-              if (bestThumb) {
-                // Build an InputPhotoFileLocation to download the thumb
-                const inputLocation: any = {
-                  _: 'inputDocumentFileLocation',
-                  id: rawDoc.id,
-                  accessHash: rawDoc.accessHash,
-                  fileReference: rawDoc.fileReference,
-                  thumbSize: bestThumb.type ?? 's',
-                };
-                const rawThumb = await tg.downloadAsBuffer({ inputMedia: inputLocation } as any)
-                  .catch(() => undefined);
-                thumbBuffer = rawThumb ? Buffer.from(rawThumb) : undefined;
+              let fileName = `video_${msg.id}.mp4`;
+              if (msg.media.type === 'document' && (msg.media as any).fileName) {
+                fileName = (msg.media as any).fileName || fileName;
               }
-            } catch (thumbErr) {
-              // Non-fatal — we'll send without a thumbnail rather than fail the whole video
-              console.warn(`[import] Could not download thumbnail for msg ${msg.id}:`, thumbErr);
-            }
 
-            // ── Send as a real video (not a raw document) ────────────────────
-            const sendPayload: any = {
-              type: 'video',
-              file: stream,
-              fileName,
-              caption: msg.text || '',
-              duration,
-              width,
-              height,
-              supportsStreaming,
-            };
-            if (thumbBuffer && thumbBuffer.length > 0) {
-              sendPayload.thumb = thumbBuffer;
-            }
+              // ── Extract video attributes from the raw TL document ────────────
+              // msg.raw gives the raw TL message; the document lives in media.document.
+              const rawDoc: any =
+                (msg as any).raw?.media?.document ??
+                (msg.media as any).raw?.document ??
+                (msg.media as any).document;
 
-            await tg.sendMedia(targetEntity, sendPayload as any);
+              const videoAttr: any = rawDoc?.attributes?.find(
+                (a: any) => a._ === 'documentAttributeVideo'
+              );
+              const duration: number  = videoAttr?.duration ?? 0;
+              const width: number     = videoAttr?.w        ?? 0;
+              const height: number    = videoAttr?.h        ?? 0;
+              const supportsStreaming: boolean = videoAttr?.supportsStreaming ?? true;
+
+              // ── Download the best available thumbnail ────────────────────────
+              // Telegram provides photoSize thumbs on documents. Pick the largest
+              // non-animated one (type 's'/'m'/'x'/'y') and download it.
+              let thumbBuffer: Buffer | undefined;
+              try {
+                const thumbs: any[] = rawDoc?.thumbs ?? [];
+                // Find a "photo" thumb (not animated/video strip which has _ === 'videoSize')
+                const bestThumb = thumbs
+                  .filter((t: any) => t._ === 'photoSize' || t._ === 'photoStrippedSize' || t._ === 'photoSizeProgressive')
+                  .sort((a: any, b: any) => (b.size ?? 0) - (a.size ?? 0))[0];
+
+                if (bestThumb) {
+                  // Build an InputPhotoFileLocation to download the thumb
+                  const inputLocation: any = {
+                    _: 'inputDocumentFileLocation',
+                    id: rawDoc.id,
+                    accessHash: rawDoc.accessHash,
+                    fileReference: rawDoc.fileReference,
+                    thumbSize: bestThumb.type ?? 's',
+                  };
+                  const rawThumb = await tg.downloadAsBuffer({ inputMedia: inputLocation } as any)
+                    .catch(() => undefined);
+                  thumbBuffer = rawThumb ? Buffer.from(rawThumb) : undefined;
+                }
+              } catch (thumbErr) {
+                // Non-fatal — we'll send without a thumbnail rather than fail the whole video
+                console.warn(`[import] Could not download thumbnail for msg ${msg.id}:`, thumbErr);
+              }
+
+              // ── Send as a real video (not a raw document) ────────────────────
+              const sendPayload: any = {
+                type: 'video',
+                file: stream,
+                fileName,
+                caption: msg.text || '',
+                duration,
+                width,
+                height,
+                supportsStreaming,
+              };
+              if (thumbBuffer && thumbBuffer.length > 0) {
+                sendPayload.thumb = thumbBuffer;
+              }
+
+              await tg.sendMedia(targetEntity, sendPayload as any);
+            } finally {
+              // Guarantee stream cleanup to prevent memory buildup on Render's 512MB RAM
+              if (stream && typeof stream.destroy === 'function') {
+                try { stream.destroy(); } catch (_) {}
+              }
+            }
 
             processedCount++;
+            videosSinceLastCooldown++;
             await updateJobProgress(job.id, adminId, { progress: processedCount }, `Imported video ${processedCount}/${totalVideos}`);
 
             if (skipExistingCheck) {
@@ -887,12 +897,37 @@ export async function startImport(
 
             imported = true;
 
-            // Polite breathing delay (1.5s) between video uploads to keep Telegram rate limits healthy
-            await new Promise(r => setTimeout(r, 1500));
+            // Batch resting pause: after every 40 videos, take a 25s cooldown to avoid Telegram bulk upload heuristics
+            if (videosSinceLastCooldown >= 40 && i + 1 < totalVideos) {
+              videosSinceLastCooldown = 0;
+              await updateJobProgress(
+                job.id,
+                adminId,
+                { progress: processedCount, message: 'Batch cooldown: resting 25s...' },
+                `[Batch Cooldown] 40 videos uploaded. Resting 25s to avoid Telegram rate limits...`
+              );
+              for (let s = 0; s < 25 && !controller.stop; s += 2) {
+                await new Promise(r => setTimeout(r, Math.min(2000, (25 - s) * 1000)));
+              }
+            } else {
+              // Polite breathing delay (1.5s) between video uploads to keep Telegram rate limits healthy
+              await new Promise(r => setTimeout(r, 1500));
+            }
 
           } catch (err: any) {
             const floodSeconds = extractFloodWaitSeconds(err);
             if (floodSeconds && floodSeconds > 0) {
+              // If flood wait is excessively long (> 1 hour), pause job gracefully so admin can resume later
+              if (floodSeconds > 3600) {
+                await updateJobProgress(
+                  job.id,
+                  adminId,
+                  { status: 'STOPPED', progress: processedCount, message: `Telegram rate limit: wait ${Math.round(floodSeconds / 60)} min. Job saved.` },
+                  `[Flood Wait] Telegram issued a ${Math.round(floodSeconds / 60)}-minute rate limit. Import safely paused. You can resume later.`
+                );
+                return;
+              }
+
               const waitTime = floodSeconds + 3;
               await updateJobProgress(
                 job.id,

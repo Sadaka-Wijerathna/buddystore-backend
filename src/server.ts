@@ -99,7 +99,16 @@ async function bootstrap() {
 }
 
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ [server] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ [server] Uncaught Exception:', error);
+});
+
 bootstrap().catch((err) => {
   console.error('❌ Failed to start server:', err);
   process.exit(1);
 });
+
