@@ -123,31 +123,33 @@ function toLong(val: any): Long {
   }
 }
 
-/**
- * Converts a raw Telegram entity (channel/chat/user) to the correct InputPeer
- * format required by low-level tg.call() API methods like messages.search.
- */
 function entityToInputPeer(entity: any): any {
-  const type: string = entity._ ?? '';
+  if (!entity) return entity;
+  if (entity._?.startsWith('inputPeer')) return entity;
+  if (entity.inputPeer) return entity.inputPeer;
+
+  const target = entity.raw ?? entity;
+  const type: string = target._ ?? target.type ?? '';
+
   if (type === 'channel' || type === 'channelForbidden') {
     return {
       _: 'inputPeerChannel',
-      channelId: Number(entity.id),
-      accessHash: toLong(entity.accessHash ?? entity.access_hash),
+      channelId: Number(target.id),
+      accessHash: toLong(target.accessHash ?? target.access_hash),
     };
   }
-  if (type === 'chat' || type === 'chatForbidden') {
-    return { _: 'inputPeerChat', chatId: Number(entity.id) };
+  if (type === 'chat' || type === 'chatForbidden' || type === 'group') {
+    return { _: 'inputPeerChat', chatId: Number(target.id) };
   }
   if (type === 'user') {
     return {
       _: 'inputPeerUser',
-      userId: Number(entity.id),
-      accessHash: toLong(entity.accessHash ?? entity.access_hash),
+      userId: Number(target.id),
+      accessHash: toLong(target.accessHash ?? target.access_hash),
     };
   }
   // Already an InputPeer or unknown type — return as-is
-  return entity;
+  return target;
 }
 
 /**
@@ -186,6 +188,7 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       bareId = chatIdentifier.slice(1);   // '-1234567' → '1234567' (basic group)
     }
 
+    // 1. Try finding in dialogCache or fetching dialogs
     try {
       const now = Date.now();
       let entities: any[];
@@ -203,30 +206,72 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
         if (adminId) dialogCache[adminId] = { dialogs: entities, fetchedAt: now };
       }
 
-      // Match by bare ID (without -100 prefix) OR by full signed ID
-      const match = entities.find((e: any) =>
-        String(e.id) === bareId || String(e.id) === chatIdentifier
-      );
-      if (match) return entityToInputPeer(match);
+      // Match by bare ID, signed ID, or marked channel ID (-100...)
+      // Support both mtcute Dialog objects (where id is in e.chat.id) and raw TL entities (e.id)
+      const match = entities.find((e: any) => {
+        const candidateIds = [
+          e.id != null ? String(e.id) : null,
+          e.chat?.id != null ? String(e.chat.id) : null,
+          e.chat?.raw?.id != null ? String(e.chat.raw.id) : null,
+        ].filter(Boolean);
+
+        return candidateIds.some(
+          id => id === bareId || id === chatIdentifier || id === `-100${bareId}`
+        );
+      });
+
+      if (match) {
+        if (match.chat?.inputPeer) return match.chat.inputPeer;
+        return entityToInputPeer(match.chat?.raw ?? match.chat ?? match);
+      }
     } catch (e) {
-      console.warn('[resolveEntity] dialog lookup failed, will attempt direct peer construction:', e);
+      console.warn('[resolveEntity] dialog lookup failed:', e);
     }
 
-    // Channel/supergroup not found in dialogs — construct inputPeer directly.
-    // accessHash=0 works for public channels and for channels the account is a member of
-    // (Telegram accepts it in messages.search and related calls).
-    if (isChannel) {
-      console.warn(`[resolveEntity] Channel ${chatIdentifier} not in dialogs; constructing inputPeerChannel with zero accessHash.`);
-      return {
-        _: 'inputPeerChannel',
-        channelId: Number(bareId),
-        accessHash: Long.ZERO,
-      };
+    // 2. Ask mtcute to resolve peer using numeric ID (queries internal storage or gets channel info)
+    try {
+      const numId = Number(chatIdentifier);
+      const peer = await tg.resolvePeer(numId);
+      if (peer) return peer;
+    } catch (e) {
+      console.warn(`[resolveEntity] tg.resolvePeer(${chatIdentifier}) failed:`, e);
     }
+
+    // 3. Also try resolving with marked channel ID (-100...) if not already attempted
+    if (!isChannel) {
+      try {
+        const markedId = Number(`-100${bareId}`);
+        const peer = await tg.resolvePeer(markedId);
+        if (peer) return peer;
+      } catch (e) {
+        console.warn(`[resolveEntity] tg.resolvePeer(-100${bareId}) failed:`, e);
+      }
+    }
+
+    // 4. Fetch fresh dialogs bypassing cache
+    try {
+      const freshResult = await tg.call({
+        _: 'messages.getDialogs',
+        offsetDate: 0, offsetId: 0,
+        offsetPeer: { _: 'inputPeerEmpty' },
+        limit: 500, hash: Long.ZERO,
+      }) as any;
+      const allChats = [...(freshResult.chats ?? []), ...(freshResult.users ?? [])];
+      const freshMatch = allChats.find((c: any) =>
+        String(c.id) === bareId || String(c.id) === chatIdentifier || String(c.id) === `-100${bareId}`
+      );
+      if (freshMatch) return entityToInputPeer(freshMatch);
+    } catch (e) {
+      console.warn('[resolveEntity] fresh getDialogs lookup failed:', e);
+    }
+
     if (isGroup) {
-      console.warn(`[resolveEntity] Group ${chatIdentifier} not in dialogs; constructing inputPeerChat.`);
       return { _: 'inputPeerChat', chatId: Number(bareId) };
     }
+
+    throw new Error(
+      `Channel ${chatIdentifier} could not be resolved with a valid access hash. Please ensure the logged-in Telegram account is a member of this channel, or use its public @username or private invite link (t.me/+...).`
+    );
   }
 
   // Username / public link — mtcute resolves internally
