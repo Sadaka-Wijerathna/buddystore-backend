@@ -311,14 +311,24 @@ function isVideoMessage(msg: any): boolean {
 /**
  * Returns a connected and authenticated TelegramClient instance if a session exists.
  */
-export async function getConnectedClient(adminId: string): Promise<TelegramClient | null> {
+export async function getConnectedClient(adminId: string, verifyPing: boolean = false): Promise<TelegramClient | null> {
   if (activeClients[adminId]) {
-    try {
-      await activeClients[adminId].getMe();
+    if (!verifyPing) {
       return activeClients[adminId];
-    } catch {
-      try { await activeClients[adminId].disconnect(); } catch (_) {}
-      delete activeClients[adminId];
+    }
+    try {
+      await Promise.race([
+        activeClients[adminId].getMe(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('getMe timeout')), 4000))
+      ]);
+      return activeClients[adminId];
+    } catch (e: any) {
+      if (e?.message?.includes('AUTH_KEY_UNREGISTERED') || e?.message?.includes('SESSION_REVOKED')) {
+        try { await activeClients[adminId].disconnect(); } catch (_) {}
+        delete activeClients[adminId];
+      } else {
+        return activeClients[adminId];
+      }
     }
   }
 
@@ -481,6 +491,15 @@ export function stopImport(adminId: string) {
  */
 // @ts-ignore
 import type { Prisma } from '@prisma/client';
+
+function extractFloodWaitSeconds(err: any): number | null {
+  if (!err) return null;
+  if (typeof err.seconds === 'number' && err.seconds > 0) return err.seconds;
+  const str = String(err.message || err.text || err.errorMessage || err);
+  const match = str.match(/FLOOD_WAIT_(\d+)/i) || str.match(/wait of (\d+) seconds/i);
+  if (match) return parseInt(match[1], 10);
+  return null;
+}
 
 async function updateJobProgress(
   jobId: string,
@@ -726,8 +745,6 @@ export async function startImport(
       const startIndex = resumeJobId ? job.progress : 0;
       await updateJobProgress(job.id, adminId, { total: totalVideos, progress: startIndex }, `Forwarding ${totalVideos} videos...`);
 
-      const limit = pLimit(STREAM_PIPE_CONCURRENCY);
-      const uploadPromises: Promise<void>[] = [];
       let processedCount = startIndex;
 
       for (let i = startIndex; i < totalVideos; i++) {
@@ -736,17 +753,21 @@ export async function startImport(
           return;
         }
 
-        uploadPromises.push(limit(async () => {
-          if (controller.stop) return;
+        const msgId = videoIds[i];
+        let imported = false;
+        let attempts = 0;
+        const maxAttempts = 5;
 
-          const msgId = videoIds[i];
+        while (!imported && attempts < maxAttempts && !controller.stop) {
+          attempts++;
           try {
             const msgs = await tg.getMessages(sourceEntity, msgId);
             const msg = msgs[0];
             if (!msg || !msg.media) {
               processedCount++;
               await updateJobProgress(job.id, adminId, { progress: processedCount }, `Skipped ${msgId}: no media.`);
-              return;
+              imported = true;
+              break;
             }
 
             if (targetBotDbId && (msg.media.type === 'document' || msg.media.type === 'video')) {
@@ -765,7 +786,8 @@ export async function startImport(
                 if (existing) {
                   processedCount++;
                   await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped (uniqueId: ${srcUniqueId}) - Already in DB.`);
-                  return;
+                  imported = true;
+                  break;
                 }
               } else if ((msg.media as any).fileSize) {
                 // Fallback: fileSize + duration (less reliable, kept for safety)
@@ -777,7 +799,8 @@ export async function startImport(
                 if (existing) {
                   processedCount++;
                   await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
-                  return;
+                  imported = true;
+                  break;
                 }
               }
             }
@@ -862,14 +885,36 @@ export async function startImport(
               });
             }
 
-          } catch (err: any) {
-            processedCount++;
-            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Error on ${msgId}: ${err.message}`);
-          }
-        }));
-      }
+            imported = true;
 
-      await Promise.all(uploadPromises);
+            // Polite breathing delay (1.5s) between video uploads to keep Telegram rate limits healthy
+            await new Promise(r => setTimeout(r, 1500));
+
+          } catch (err: any) {
+            const floodSeconds = extractFloodWaitSeconds(err);
+            if (floodSeconds && floodSeconds > 0) {
+              const waitTime = floodSeconds + 3;
+              await updateJobProgress(
+                job.id,
+                adminId,
+                { progress: processedCount, message: `Flood wait: pausing for ${waitTime}s...` },
+                `[Flood Wait] Telegram requested ${floodSeconds}s pause. Waiting ${waitTime}s before retrying msg ${msgId}...`
+              );
+              // Wait in small increments while checking for cancellation
+              for (let s = 0; s < waitTime && !controller.stop; s += 2) {
+                await new Promise(r => setTimeout(r, Math.min(2000, (waitTime - s) * 1000)));
+              }
+              // Do NOT mark imported = true; while loop will retry this exact video
+              continue;
+            }
+
+            // Non-flood error (e.g. corrupted file, invalid media)
+            processedCount++;
+            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Error on msg ${msgId}: ${err.message || err}`);
+            imported = true; // Skip to next video
+          }
+        }
+      }
 
       if (controller.stop) {
         await updateJobProgress(job.id, adminId, { status: 'STOPPED' }, 'Stopped by admin.');

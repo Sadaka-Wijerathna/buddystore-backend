@@ -204,43 +204,48 @@ export const stopImportController = async (req: AuthRequest, res: Response): Pro
 export const statusController = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const adminId = req.user?.id || 'admin';
-    const client = await mtprotoService.getConnectedClient(adminId);
-    const authorized = !!client;
     const importStatus = await mtprotoService.getStatus(adminId);
+    const client = await mtprotoService.getConnectedClient(adminId, false);
+    const authorized = !!client;
 
     let sessionInfo = null;
     if (client) {
-      try {
-        const now = Date.now();
-        const cached = sessionInfoCache[adminId];
-        if (cached && now - cached.fetchedAt < SESSION_INFO_TTL_MS) {
-          sessionInfo = cached.data;
-        } else {
-          const me: any = await client.getMe();
-          let profilePhoto = null;
-          try {
-            if (me?.photo) {
-              const photoBuffer = await client.downloadAsBuffer(me.photo.small);
-              if (photoBuffer && photoBuffer.length > 0) {
-                profilePhoto = `data:image/jpeg;base64,${Buffer.from(photoBuffer).toString('base64')}`;
+      const now = Date.now();
+      const cached = sessionInfoCache[adminId];
+      if (cached && now - cached.fetchedAt < SESSION_INFO_TTL_MS) {
+        sessionInfo = cached.data;
+      } else {
+        try {
+          sessionInfo = await Promise.race([
+            (async () => {
+              const me: any = await client.getMe();
+              let profilePhoto = null;
+              try {
+                if (me?.photo) {
+                  const photoBuffer = await client.downloadAsBuffer(me.photo.small);
+                  if (photoBuffer && photoBuffer.length > 0) {
+                    profilePhoto = `data:image/jpeg;base64,${Buffer.from(photoBuffer).toString('base64')}`;
+                  }
+                }
+              } catch (photoErr) {
+                console.warn('Failed to download profile photo:', photoErr);
               }
-            }
-          } catch (photoErr) {
-            console.warn('Failed to download profile photo:', photoErr);
-          }
 
-          sessionInfo = {
-            id: me?.id?.toString() || '',
-            name: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || me?.username || 'Telegram User',
-            username: me?.username ? `@${me?.username}` : null,
-            phone: me?.phone ? `+${me?.phone}` : null,
-            profilePhoto,
-          };
-          
-          sessionInfoCache[adminId] = { data: sessionInfo, fetchedAt: now };
+              const info = {
+                id: me?.id?.toString() || '',
+                name: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || me?.username || 'Telegram User',
+                username: me?.username ? `@${me?.username}` : null,
+                phone: me?.phone ? `+${me?.phone}` : null,
+                profilePhoto,
+              };
+              sessionInfoCache[adminId] = { data: info, fetchedAt: Date.now() };
+              return info;
+            })(),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('Session info timeout')), 3000))
+          ]);
+        } catch (meErr) {
+          if (cached) sessionInfo = cached.data;
         }
-      } catch (meErr) {
-        console.error('Failed to retrieve session info:', meErr);
       }
     }
 
