@@ -763,18 +763,71 @@ export async function startImport(
             }
 
             const stream = await tg.downloadAsStream(msg.media as any);
-            
+
             let fileName = `video_${msg.id}.mp4`;
-            if (msg.media.type === 'document' && msg.media.fileName) {
+            if (msg.media.type === 'document' && (msg.media as any).fileName) {
               fileName = (msg.media as any).fileName || fileName;
             }
 
-            await tg.sendMedia(targetEntity, {
-              type: 'document',
+            // ── Extract video attributes from the raw TL document ────────────
+            // msg.raw gives the raw TL message; the document lives in media.document.
+            const rawDoc: any =
+              (msg as any).raw?.media?.document ??
+              (msg.media as any).raw?.document ??
+              (msg.media as any).document;
+
+            const videoAttr: any = rawDoc?.attributes?.find(
+              (a: any) => a._ === 'documentAttributeVideo'
+            );
+            const duration: number  = videoAttr?.duration ?? 0;
+            const width: number     = videoAttr?.w        ?? 0;
+            const height: number    = videoAttr?.h        ?? 0;
+            const supportsStreaming: boolean = videoAttr?.supportsStreaming ?? true;
+
+            // ── Download the best available thumbnail ────────────────────────
+            // Telegram provides photoSize thumbs on documents. Pick the largest
+            // non-animated one (type 's'/'m'/'x'/'y') and download it.
+            let thumbBuffer: Buffer | undefined;
+            try {
+              const thumbs: any[] = rawDoc?.thumbs ?? [];
+              // Find a "photo" thumb (not animated/video strip which has _ === 'videoSize')
+              const bestThumb = thumbs
+                .filter((t: any) => t._ === 'photoSize' || t._ === 'photoStrippedSize' || t._ === 'photoSizeProgressive')
+                .sort((a: any, b: any) => (b.size ?? 0) - (a.size ?? 0))[0];
+
+              if (bestThumb) {
+                // Build an InputPhotoFileLocation to download the thumb
+                const inputLocation: any = {
+                  _: 'inputDocumentFileLocation',
+                  id: rawDoc.id,
+                  accessHash: rawDoc.accessHash,
+                  fileReference: rawDoc.fileReference,
+                  thumbSize: bestThumb.type ?? 's',
+                };
+                thumbBuffer = await tg.downloadAsBuffer({ inputMedia: inputLocation } as any)
+                  .catch(() => undefined);
+              }
+            } catch (thumbErr) {
+              // Non-fatal — we'll send without a thumbnail rather than fail the whole video
+              console.warn(`[import] Could not download thumbnail for msg ${msg.id}:`, thumbErr);
+            }
+
+            // ── Send as a real video (not a raw document) ────────────────────
+            const sendPayload: any = {
+              type: 'video',
               file: stream,
-              fileName: fileName,
-              caption: msg.text || ''
-            } as any);
+              fileName,
+              caption: msg.text || '',
+              duration,
+              width,
+              height,
+              supportsStreaming,
+            };
+            if (thumbBuffer && thumbBuffer.length > 0) {
+              sendPayload.thumb = thumbBuffer;
+            }
+
+            await tg.sendMedia(targetEntity, sendPayload as any);
 
             processedCount++;
             await updateJobProgress(job.id, adminId, { progress: processedCount }, `Imported video ${processedCount}/${totalVideos}`);
