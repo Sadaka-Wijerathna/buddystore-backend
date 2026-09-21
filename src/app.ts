@@ -4,6 +4,8 @@ import helmet from 'helmet';
 import cors from 'cors';
 import path from 'path';
 import config from './config';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerSpec } from './swagger';
 
 // Routes
 import authRoutes from './routes/auth.routes';
@@ -132,7 +134,10 @@ app.use('/webhooks', (req, res, next) => {
 // ─── API Middleware (applied only after webhook routes) ───────────────────────
 app.use(sanitizeInput);
 
-// ─── Routes ────────────────────────────────────────────────────────────────────
+// ─── API Routes ─────────────────────────────────────────────────────────────
+if (process.env.ENABLE_DOCS !== 'false') {
+  app.use('/api/v1/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { customSiteTitle: 'BuddyStore API Docs' }));
+}
 // Apply the general rate-limiter to all API routes (catch-all abuse protection)
 app.use('/api/v1/auth', generalLimiter, authRoutes);
 app.use('/api/v1/orders', generalLimiter, orderRoutes);

@@ -220,9 +220,11 @@ export const statusController = async (req: AuthRequest, res: Response): Promise
           const me: any = await client.getMe();
           let profilePhoto = null;
           try {
-            const photoBuffer = await client.downloadProfilePhoto('me');
-            if (photoBuffer && photoBuffer.length > 0) {
-              profilePhoto = `data:image/jpeg;base64,${photoBuffer.toString('base64')}`;
+            if (me?.photo) {
+              const photoBuffer = await client.downloadAsBuffer(me.photo.small);
+              if (photoBuffer && photoBuffer.length > 0) {
+                profilePhoto = `data:image/jpeg;base64,${Buffer.from(photoBuffer).toString('base64')}`;
+              }
             }
           } catch (photoErr) {
             console.warn('Failed to download profile photo:', photoErr);
