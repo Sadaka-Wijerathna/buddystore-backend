@@ -113,6 +113,33 @@ export async function switchAccount(adminId: string, phoneNumber: string) {
 
 
 /**
+ * Converts a raw Telegram entity (channel/chat/user) to the correct InputPeer
+ * format required by low-level tg.call() API methods like messages.search.
+ */
+function entityToInputPeer(entity: any): any {
+  const type: string = entity._ ?? '';
+  if (type === 'channel' || type === 'channelForbidden') {
+    return {
+      _: 'inputPeerChannel',
+      channelId: entity.id,
+      accessHash: entity.accessHash ?? entity.access_hash ?? BigInt(0),
+    };
+  }
+  if (type === 'chat' || type === 'chatForbidden') {
+    return { _: 'inputPeerChat', chatId: entity.id };
+  }
+  if (type === 'user') {
+    return {
+      _: 'inputPeerUser',
+      userId: entity.id,
+      accessHash: entity.accessHash ?? entity.access_hash ?? BigInt(0),
+    };
+  }
+  // Already an InputPeer or unknown type — return as-is
+  return entity;
+}
+
+/**
  * Resolves a Telegram entity from a username, numeric ID, public link, or private invite link.
  * Private invite links (t.me/+HASH or t.me/joinchat/HASH) cannot be resolved via getEntity;
  * we must call ImportChatInvite to join/resolve them.
@@ -127,33 +154,47 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
     try {
       const inviteInfo = await tg.call({ _: 'messages.checkChatInvite', hash }) as any;
       if (inviteInfo._ === 'chatInviteAlready' || inviteInfo._ === 'chatInvitePeek') {
-        return inviteInfo.chat;
+        return entityToInputPeer(inviteInfo.chat);
       }
       const result = await tg.call({ _: 'messages.importChatInvite', hash }) as any;
-      if (result?.chats?.[0]) return result.chats[0];
+      if (result?.chats?.[0]) return entityToInputPeer(result.chats[0]);
     } catch (err: any) {
       throw new Error(`Failed to resolve private invite link: ${err.message}`);
     }
   }
 
-  // Numeric ID — search dialog cache for access hash
+  // Numeric ID — GramJS uses a -100 prefix for channels/supergroups.
+  // Strip it to get the bare ID that Telegram stores internally.
   if (/^-?\d+$/.test(chatIdentifier)) {
+    let bareId = chatIdentifier;
+    if (chatIdentifier.startsWith('-100')) {
+      bareId = chatIdentifier.slice(4);   // '-1003986179031' → '3986179031'
+    } else if (chatIdentifier.startsWith('-')) {
+      bareId = chatIdentifier.slice(1);   // '-1234567' → '1234567' (basic group)
+    }
+
     try {
       const now = Date.now();
+      let entities: any[];
+
       if (adminId && dialogCache[adminId] && now - dialogCache[adminId].fetchedAt < DIALOG_CACHE_TTL_MS) {
-        const hit = dialogCache[adminId].dialogs.find((e: any) => String(e.id) === chatIdentifier);
-        if (hit) return hit;
+        entities = dialogCache[adminId].dialogs;
+      } else {
+        const rawResult = await tg.call({
+          _: 'messages.getDialogs',
+          offsetDate: 0, offsetId: 0,
+          offsetPeer: { _: 'inputPeerEmpty' },
+          limit: 300, hash: 0 as any,
+        }) as any;
+        entities = [...(rawResult.chats ?? []), ...(rawResult.users ?? [])];
+        if (adminId) dialogCache[adminId] = { dialogs: entities, fetchedAt: now };
       }
-      const rawResult = await tg.call({
-        _: 'messages.getDialogs',
-        offsetDate: 0, offsetId: 0,
-        offsetPeer: { _: 'inputPeerEmpty' },
-        limit: 300, hash: 0 as any,
-      }) as any;
-      const entities = [...(rawResult.chats ?? []), ...(rawResult.users ?? [])];
-      if (adminId) dialogCache[adminId] = { dialogs: entities, fetchedAt: now };
-      const match = entities.find((e: any) => String(e.id) === chatIdentifier);
-      if (match) return match;
+
+      // Match by bare ID (without -100 prefix) OR by full signed ID
+      const match = entities.find((e: any) =>
+        String(e.id) === bareId || String(e.id) === chatIdentifier
+      );
+      if (match) return entityToInputPeer(match);
     } catch (e) {
       console.warn('[resolveEntity] dialog lookup failed, falling back to resolvePeer:', e);
     }
@@ -162,6 +203,7 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
   // Username / public link — mtcute resolves internally
   return tg.resolvePeer(chatIdentifier as any);
 }
+
 
 /**
  * Checks if a Telegram message contains a video document (mtcute).
