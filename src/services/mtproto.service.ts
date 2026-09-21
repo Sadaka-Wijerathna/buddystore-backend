@@ -1,4 +1,5 @@
 import { TelegramClient } from '@mtcute/node';
+import pLimit from 'p-limit';
 import { convertFromGramjsSession } from '@mtcute/convert';
 import prisma from '../lib/prisma';
 import config from '../config';
@@ -411,7 +412,6 @@ export async function startImport(
   adminId: string,
   sourceChat: string,
   targetBot: string,
-  delayMs: number = 2000,
   resumeJobId?: string,
   limitCount?: number,
   skipExisting: boolean = true,
@@ -551,63 +551,80 @@ export async function startImport(
       const startIndex = resumeJobId ? job.progress : 0;
       await updateJobProgress(job.id, adminId, { total: totalVideos, progress: startIndex }, `Forwarding ${totalVideos} videos...`);
 
+      const limit = pLimit(STREAM_PIPE_CONCURRENCY);
+      const uploadPromises: Promise<void>[] = [];
+      let processedCount = startIndex;
+
       for (let i = startIndex; i < totalVideos; i++) {
         if (controller.stop) {
           await updateJobProgress(job.id, adminId, { status: 'STOPPED' }, 'Stopped by admin.');
           return;
         }
 
-        const msgId = videoIds[i];
-        try {
-          const msgs = await tg.getMessages(sourceEntity, msgId);
-          const msg = msgs[0];
-          if (!msg || !msg.media) {
-            await updateJobProgress(job.id, adminId, { progress: i + 1 }, `Skipped ${msgId}: no media.`);
-            continue;
-          }
+        uploadPromises.push(limit(async () => {
+          if (controller.stop) return;
 
-          if (targetBotDbId && (msg.media.type === 'document' || msg.media.type === 'video') && (msg.media as any).fileSize) {
-            const fileSize = String((msg.media as any).fileSize || 0);
-            const duration = (msg.media as any).duration || 0;
-            const existing = await prisma.videos.findFirst({
-              where: { botId: targetBotDbId, fileSize, duration }
-            });
-            if (existing) {
-              await updateJobProgress(job.id, adminId, { progress: i + 1 }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
-              continue;
+          const msgId = videoIds[i];
+          try {
+            const msgs = await tg.getMessages(sourceEntity, msgId);
+            const msg = msgs[0];
+            if (!msg || !msg.media) {
+              processedCount++;
+              await updateJobProgress(job.id, adminId, { progress: processedCount }, `Skipped ${msgId}: no media.`);
+              return;
             }
+
+            if (targetBotDbId && (msg.media.type === 'document' || msg.media.type === 'video') && (msg.media as any).fileSize) {
+              const fileSize = String((msg.media as any).fileSize || 0);
+              const duration = (msg.media as any).duration || 0;
+              const existing = await prisma.videos.findFirst({
+                where: { botId: targetBotDbId, fileSize, duration }
+              });
+              if (existing) {
+                processedCount++;
+                await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
+                return;
+              }
+            }
+
+            const stream = await tg.downloadAsStream(msg.media as any);
+            
+            let fileName = `video_${msg.id}.mp4`;
+            if (msg.media.type === 'document' && msg.media.fileName) {
+              fileName = (msg.media as any).fileName || fileName;
+            }
+
+            await tg.sendMedia(targetEntity, {
+              type: 'document',
+              file: stream,
+              fileName: fileName,
+              caption: msg.text || ''
+            } as any);
+
+            processedCount++;
+            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Imported video ${processedCount}/${totalVideos}`);
+
+            if (skipExistingCheck) {
+              const key = `telegram_last_msg_id_${sourceChat.replace(/[@+]/g, '')}_${targetBot.replace(/[@+]/g, '')}`;
+              await prisma.setting.upsert({
+                where: { key },
+                update: { value: msg.id.toString() },
+                create: { key, value: msg.id.toString() },
+              });
+            }
+
+          } catch (err: any) {
+            processedCount++;
+            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Error on ${msgId}: ${err.message}`);
           }
+        }));
+      }
 
-          const stream = await tg.downloadAsStream(msg.media as any);
-          
-          let fileName = `video_${msg.id}.mp4`;
-          if (msg.media.type === 'document' && msg.media.fileName) {
-            fileName = (msg.media as any).fileName || fileName;
-          }
+      await Promise.all(uploadPromises);
 
-          await tg.sendMedia(targetEntity, {
-            type: 'document',
-            file: stream,
-            fileName: fileName,
-            caption: msg.text || ''
-          } as any);
-
-          await updateJobProgress(job.id, adminId, { progress: i + 1 }, `Imported video ${i + 1}/${totalVideos}`);
-
-          if (skipExistingCheck) {
-            const key = `telegram_last_msg_id_${sourceChat.replace(/[@+]/g, '')}_${targetBot.replace(/[@+]/g, '')}`;
-            await prisma.setting.upsert({
-              where: { key },
-              update: { value: msg.id.toString() },
-              create: { key, value: msg.id.toString() },
-            });
-          }
-
-        } catch (err: any) {
-          await updateJobProgress(job.id, adminId, { progress: i + 1 }, `Error on ${msgId}: ${err.message}`);
-        }
-        
-        await new Promise(r => setTimeout(r, delayMs));
+      if (controller.stop) {
+        await updateJobProgress(job.id, adminId, { status: 'STOPPED' }, 'Stopped by admin.');
+        return;
       }
 
       await updateJobProgress(job.id, adminId, { status: 'COMPLETED' }, 'Import completed.');

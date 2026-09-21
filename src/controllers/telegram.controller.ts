@@ -162,7 +162,6 @@ export const startImportController = async (req: AuthRequest, res: Response): Pr
       adminId,
       sourceChat,
       targetBot,
-      delay,
       undefined,
       parsedLimit,
       parsedSkip,
@@ -376,7 +375,6 @@ export const resumeImportController = async (req: AuthRequest, res: Response): P
       adminId,
       job.sourceChat,
       job.targetBot,
-      delay,
       jobId,
       job.limitCount || undefined,
       job.skipExisting
