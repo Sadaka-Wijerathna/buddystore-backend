@@ -1391,11 +1391,11 @@ export const deleteAccount = async (req: AuthRequest, res: Response): Promise<vo
     return;
   }
 
-  const expectedConfirmation = `delete ${req.user.telegramUsername}`.toUpperCase();
+  const expectedConfirmation = `delete ${req.user!.telegramUsername}`.toUpperCase();
   const { confirmation } = req.body as { confirmation?: string };
   
   if (!confirmation || confirmation.trim().toUpperCase() !== expectedConfirmation) {
-    res.status(400).json({ success: false, message: `Please type "delete ${req.user.telegramUsername}" to confirm` });
+    res.status(400).json({ success: false, message: `Please type "delete ${req.user!.telegramUsername}" to confirm` });
     return;
   }
 
