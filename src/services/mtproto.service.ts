@@ -749,16 +749,36 @@ export async function startImport(
               return;
             }
 
-            if (targetBotDbId && (msg.media.type === 'document' || msg.media.type === 'video') && (msg.media as any).fileSize) {
-              const fileSize = String((msg.media as any).fileSize || 0);
-              const duration = (msg.media as any).duration || 0;
-              const existing = await prisma.videos.findFirst({
-                where: { botId: targetBotDbId, fileSize, duration }
-              });
-              if (existing) {
-                processedCount++;
-                await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
-                return;
+            if (targetBotDbId && (msg.media.type === 'document' || msg.media.type === 'video')) {
+              // Prefer telegramUniqueId (Telegram's content-addressable file identifier).
+              // It is the same value the bot stores when it receives the video, so this
+              // check is 100% accurate and survives re-imports from the same source.
+              const srcUniqueId: string | undefined =
+                (msg.media as any).uniqueFileId ??
+                (msg.media as any).fileUniqueId ??
+                (msg as any).raw?.media?.document?.id?.toString();   // last-resort: doc id
+
+              if (srcUniqueId) {
+                const existing = await prisma.videos.findFirst({
+                  where: { botId: targetBotDbId, telegramUniqueId: srcUniqueId }
+                });
+                if (existing) {
+                  processedCount++;
+                  await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped (uniqueId: ${srcUniqueId}) - Already in DB.`);
+                  return;
+                }
+              } else if ((msg.media as any).fileSize) {
+                // Fallback: fileSize + duration (less reliable, kept for safety)
+                const fileSize = String((msg.media as any).fileSize || 0);
+                const duration = (msg.media as any).duration || 0;
+                const existing = await prisma.videos.findFirst({
+                  where: { botId: targetBotDbId, fileSize, duration }
+                });
+                if (existing) {
+                  processedCount++;
+                  await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
+                  return;
+                }
               }
             }
 
