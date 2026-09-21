@@ -824,8 +824,9 @@ export async function startImport(
                   fileReference: rawDoc.fileReference,
                   thumbSize: bestThumb.type ?? 's',
                 };
-                thumbBuffer = await tg.downloadAsBuffer({ inputMedia: inputLocation } as any)
+                const rawThumb = await tg.downloadAsBuffer({ inputMedia: inputLocation } as any)
                   .catch(() => undefined);
+                thumbBuffer = rawThumb ? Buffer.from(rawThumb) : undefined;
               }
             } catch (thumbErr) {
               // Non-fatal — we'll send without a thumbnail rather than fail the whole video
