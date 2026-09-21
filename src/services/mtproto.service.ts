@@ -626,10 +626,17 @@ export async function startImport(
 
       console.log('[scan] sourceEntity:', JSON.stringify(sourceEntity));
 
-      // For getHistory: offsetId=0 starts from the newest; jobStartId means
-      // "start at this message ID and go backwards from there".
-      let offsetId = jobStartId ? jobStartId : 0;
-      const minId = lastMsgId ?? 0;  // don't go below already-imported IDs
+      // getHistory semantics:
+      //   offsetId=0  → start from the newest message, paginate backwards
+      //   offsetId=N  → return messages with id < N (i.e. older than N)
+      //
+      // jobEndId   = "newest message to include"  → use as offsetId ceiling: offsetId = jobEndId + 1
+      // jobStartId = "oldest message to include"  → use as minId floor: minId = jobStartId - 1
+      // lastMsgId  = already-imported watermark   → also a floor for minId
+      let offsetId = jobEndId ? jobEndId + 1 : 0;
+      const floorId = Math.max(lastMsgId ?? 0, jobStartId ? jobStartId - 1 : 0);
+      const minId = floorId;  // getHistory will not return messages with id <= minId
+      console.log(`[scan] range: offsetId=${offsetId} (newest start) minId=${minId} (oldest floor) jobStartId=${jobStartId} jobEndId=${jobEndId} lastMsgId=${lastMsgId}`);
       let scanTick = 0;
       let hasMore = true;
 
