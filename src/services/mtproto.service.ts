@@ -1,4 +1,5 @@
 import { TelegramClient } from '@mtcute/node';
+import { Long } from '@mtcute/core';
 import pLimit from 'p-limit';
 import { convertFromGramjsSession } from '@mtcute/convert';
 import prisma from '../lib/prisma';
@@ -112,6 +113,16 @@ export async function switchAccount(adminId: string, phoneNumber: string) {
 
 
 
+function toLong(val: any): Long {
+  if (!val) return Long.ZERO;
+  if (Long.isLong(val)) return val;
+  try {
+    return Long.fromValue(val);
+  } catch {
+    return Long.ZERO;
+  }
+}
+
 /**
  * Converts a raw Telegram entity (channel/chat/user) to the correct InputPeer
  * format required by low-level tg.call() API methods like messages.search.
@@ -121,18 +132,18 @@ function entityToInputPeer(entity: any): any {
   if (type === 'channel' || type === 'channelForbidden') {
     return {
       _: 'inputPeerChannel',
-      channelId: entity.id,
-      accessHash: entity.accessHash ?? entity.access_hash ?? BigInt(0),
+      channelId: Number(entity.id),
+      accessHash: toLong(entity.accessHash ?? entity.access_hash),
     };
   }
   if (type === 'chat' || type === 'chatForbidden') {
-    return { _: 'inputPeerChat', chatId: entity.id };
+    return { _: 'inputPeerChat', chatId: Number(entity.id) };
   }
   if (type === 'user') {
     return {
       _: 'inputPeerUser',
-      userId: entity.id,
-      accessHash: entity.accessHash ?? entity.access_hash ?? BigInt(0),
+      userId: Number(entity.id),
+      accessHash: toLong(entity.accessHash ?? entity.access_hash),
     };
   }
   // Already an InputPeer or unknown type — return as-is
@@ -186,7 +197,7 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
           _: 'messages.getDialogs',
           offsetDate: 0, offsetId: 0,
           offsetPeer: { _: 'inputPeerEmpty' },
-          limit: 300, hash: 0 as any,
+          limit: 300, hash: Long.ZERO,
         }) as any;
         entities = [...(rawResult.chats ?? []), ...(rawResult.users ?? [])];
         if (adminId) dialogCache[adminId] = { dialogs: entities, fetchedAt: now };
@@ -208,13 +219,13 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       console.warn(`[resolveEntity] Channel ${chatIdentifier} not in dialogs; constructing inputPeerChannel with zero accessHash.`);
       return {
         _: 'inputPeerChannel',
-        channelId: BigInt(bareId),
-        accessHash: BigInt(0),
+        channelId: Number(bareId),
+        accessHash: Long.ZERO,
       };
     }
     if (isGroup) {
       console.warn(`[resolveEntity] Group ${chatIdentifier} not in dialogs; constructing inputPeerChat.`);
-      return { _: 'inputPeerChat', chatId: BigInt(bareId) };
+      return { _: 'inputPeerChat', chatId: Number(bareId) };
     }
   }
 
@@ -563,7 +574,7 @@ export async function startImport(
           limit: 100,
           maxId: 0,
           minId: 0,
-          hash: 0 as any,
+          hash: Long.ZERO,
         }) as any;
 
         const messages = res.messages || [];
@@ -717,7 +728,7 @@ export async function countVideos(adminId: string, sourceChat: string): Promise<
     limit: 1,
     maxId: 0,
     minId: 0,
-    hash: 0 as any,
+    hash: Long.ZERO,
   }) as any;
   return result.count ?? 0;
 }
