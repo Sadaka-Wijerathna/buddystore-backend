@@ -434,7 +434,7 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
 
     // Issue JWT
     const jwtToken = jwt.sign(
-      { id: user.id, role: user.role, adminRole: user.adminRole, telegramUsername: user.telegramUsername, tokenVersion: user.tokenVersion ?? 0 },
+      { id: user.id, role: user.role, adminRole: user.adminRole, hasStartedBot: user.hasStartedBot, telegramUsername: user.telegramUsername, tokenVersion: user.tokenVersion ?? 0 },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
@@ -471,7 +471,7 @@ export const setPassword = async (req: Request, res: Response): Promise<void> =>
           firstName: profile?.firstName || user.firstName,
           lastName: profile?.lastName || user.lastName,
           role: user.role,
-          adminRole: user.adminRole,
+          adminRole: user.adminRole, hasStartedBot: user.hasStartedBot,
           photoUrl: resolvedPhotoUrl,
         },
       },
@@ -572,7 +572,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     }).catch(e => console.error('[login] Profile update failed:', e));
 
     const token = jwt.sign(
-      { id: user.id, role: user.role, adminRole: user.adminRole, telegramUsername: profile?.username || user.telegramUsername, tokenVersion: user.tokenVersion },
+      { id: user.id, role: user.role, adminRole: user.adminRole, hasStartedBot: user.hasStartedBot, telegramUsername: profile?.username || user.telegramUsername, tokenVersion: user.tokenVersion },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
@@ -596,7 +596,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
           firstName: profile?.firstName || user.firstName,
           lastName: profile?.lastName || user.lastName,
           role: user.role,
-          adminRole: user.adminRole,
+          adminRole: user.adminRole, hasStartedBot: user.hasStartedBot,
           photoUrl: resolvedPhotoUrl,
           superBadge: activeBadge,
         },
@@ -812,7 +812,7 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
     }
 
     const newToken = jwt.sign(
-      { id: user.id, role: user.role, adminRole: user.adminRole, telegramUsername: user.telegramUsername, tokenVersion: user.tokenVersion },
+      { id: user.id, role: user.role, adminRole: user.adminRole, hasStartedBot: user.hasStartedBot, telegramUsername: user.telegramUsername, tokenVersion: user.tokenVersion },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn } as jwt.SignOptions
     );
@@ -862,7 +862,7 @@ export const refreshToken = async (req: AuthRequest, res: Response): Promise<voi
           firstName: profile?.firstName || user.firstName,
           lastName: profile?.lastName || user.lastName,
           role: user.role,
-          adminRole: user.adminRole,
+          adminRole: user.adminRole, hasStartedBot: user.hasStartedBot,
           photoUrl: resolvedPhotoUrl,
           superBadge: activeBadge,
         },
@@ -1000,12 +1000,34 @@ export const getBalance = async (req: AuthRequest, res: Response): Promise<void>
   }
 };
 
+// ─── Get Bot Status (lightweight) ─────────────────────────────────────────────
+// Returns only hasStartedBot — cheap single-field DB read with no Telegram I/O.
+// Used by the BotNotifyBanner to poll until the user starts the bot.
+export const getBotStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: { hasStartedBot: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    res.json({ success: true, data: { hasStartedBot: user.hasStartedBot } });
+  } catch (error) {
+    console.error('[getBotStatus]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 // ─── Get Telegram Profile Photo ───────────────────────────────────────────────
 export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
-      select: { telegramId: true, telegramUsername: true, photoUrl: true },
+      select: { telegramId: true, telegramUsername: true, photoUrl: true, hasStartedBot: true },
     });
 
     if (!user) {
@@ -1049,7 +1071,8 @@ export const getPhoto = async (req: AuthRequest, res: Response): Promise<void> =
         firstName: profile?.firstName,
         lastName: profile?.lastName,
         telegramUsername: profile?.username,
-        superBadge: activeBadge
+        superBadge: activeBadge,
+        hasStartedBot: user.hasStartedBot,
       } 
     });
   } catch (error) {
@@ -1169,7 +1192,7 @@ export const telegramWidgetLogin = async (req: Request, res: Response): Promise<
       {
         id: user.id,
         role: user.role,
-        adminRole: user.adminRole,
+        adminRole: user.adminRole, hasStartedBot: user.hasStartedBot,
         telegramUsername: incomingUsername || user.telegramUsername,
         tokenVersion: user.tokenVersion ?? 0,
       },
@@ -1198,7 +1221,7 @@ export const telegramWidgetLogin = async (req: Request, res: Response): Promise<
           firstName: telegramData.first_name || user.firstName,
           lastName: telegramData.last_name || user.lastName || null,
           role: user.role,
-          adminRole: user.adminRole,
+          adminRole: user.adminRole, hasStartedBot: user.hasStartedBot,
           photoUrl: telegramData.photo_url || user.photoUrl || null,
           superBadge: activeBadge,
         },
@@ -1337,7 +1360,7 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
       {
         id:               user.id,
         role:             user.role,
-        adminRole:        user.adminRole,
+        adminRole:        user.adminRole, hasStartedBot: user.hasStartedBot,
         telegramUsername: incomingUsername || user.telegramUsername,
         tokenVersion:     user.tokenVersion ?? 0,
       },
@@ -1365,7 +1388,7 @@ export const telegramOidcCallback = async (req: Request, res: Response): Promise
           firstName:        decodedToken.given_name  || user.firstName,
           lastName:         decodedToken.family_name || user.lastName || null,
           role:             user.role,
-          adminRole:        user.adminRole,
+          adminRole:        user.adminRole, hasStartedBot: user.hasStartedBot,
           photoUrl:         decodedToken.picture     || user.photoUrl || null,
           superBadge:       activeBadge,
         },

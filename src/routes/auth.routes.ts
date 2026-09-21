@@ -45,6 +45,9 @@ router.get('/me/wallet', authenticate, authController.getWallet);
 // Fetch only user's wallet balance
 router.get('/me/balance', authenticate, authController.getBalance);
 
+// Lightweight poll: has the user started the Telegram bot yet?
+router.get('/me/bot-status', authenticate, authController.getBotStatus);
+
 // Fetch the user's Telegram profile photo URL
 router.get('/me/photo', authenticate, authController.getPhoto);
 

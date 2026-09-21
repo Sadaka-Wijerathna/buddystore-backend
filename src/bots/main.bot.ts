@@ -39,7 +39,7 @@ mainBot.use(async (ctx, next) => {
     prisma.user
       .findUnique({
         where: { telegramId: BigInt(ctx.from.id) },
-        select: { id: true, telegramUsername: true, firstName: true, lastName: true },
+        select: { id: true, telegramUsername: true, firstName: true, lastName: true, hasStartedBot: true },
       })
       .then((user) => {
         if (user) {
@@ -49,7 +49,8 @@ mainBot.use(async (ctx, next) => {
           if (
             currentUsername !== dbUsername ||
             user.firstName !== ctx.from?.first_name ||
-            user.lastName !== (ctx.from?.last_name || null)
+            user.lastName !== (ctx.from?.last_name || null) ||
+            !user.hasStartedBot
           ) {
             const isUsernameChanged = currentUsername && currentUsername !== dbUsername;
             prisma.user
@@ -59,6 +60,7 @@ mainBot.use(async (ctx, next) => {
                   telegramUsername: ctx.from?.username || user.telegramUsername,
                   firstName: ctx.from?.first_name,
                   lastName: ctx.from?.last_name || null,
+                  hasStartedBot: true,
                   ...(isUsernameChanged && {
                     oldTelegramUsername: user.telegramUsername,
                     usernameUpdatedAt: new Date(),
@@ -145,6 +147,8 @@ mainBot.command('start', async (ctx: Context) => {
           passwordHash,
           referralCode,
           role: 'USER',
+          // User just interacted with the bot — mark it immediately
+          hasStartedBot: true,
         },
       });
 
@@ -547,6 +551,39 @@ mainBot.on('message', async (ctx: Context) => {
   }
 });
 
+// ─── Bot Block / Unblock Detection ───────────────────────────────────────────
+// Telegram fires a `my_chat_member` update whenever the user's relationship
+// with the bot changes (start, block, unblock, etc.).
+//
+// kicked  → user blocked the bot  → reset hasStartedBot so the banner returns
+// member  → user unblocked the bot → set hasStartedBot back to true
+mainBot.on('my_chat_member', async (ctx) => {
+  const from = ctx.from;
+  if (!from) return;
+
+  const newStatus = ctx.myChatMember.new_chat_member.status;
+
+  if (newStatus === 'kicked') {
+    // User blocked the bot — they'll miss order notifications until they unblock
+    await prisma.user
+      .updateMany({
+        where: { telegramId: BigInt(from.id) },
+        data: { hasStartedBot: false },
+      })
+      .catch(() => {});
+    console.log(`[MainBot] 🚫 User ${from.id} blocked the bot — hasStartedBot reset to false`);
+  } else if (newStatus === 'member') {
+    // User unblocked the bot
+    await prisma.user
+      .updateMany({
+        where: { telegramId: BigInt(from.id) },
+        data: { hasStartedBot: true },
+      })
+      .catch(() => {});
+    console.log(`[MainBot] ✅ User ${from.id} unblocked the bot — hasStartedBot set to true`);
+  }
+});
+
 // ─── Telegram Stars Payment Handlers ──────────────────────────────────────────
 
 /**
@@ -734,6 +771,14 @@ export const registerMainBotWebhook = async (baseUrl: string, secret?: string): 
   try {
     await mainBot.api.setWebhook(webhookUrl, {
       drop_pending_updates: true,
+      // Explicitly include my_chat_member so Telegram delivers block/unblock events.
+      // Without this, the default allowed_updates list omits it.
+      allowed_updates: [
+        'message',
+        'callback_query',
+        'pre_checkout_query',
+        'my_chat_member',
+      ],
       ...(secret ? { secret_token: secret } : {}),
     });
     console.log('✅ Main Bot webhook registered');

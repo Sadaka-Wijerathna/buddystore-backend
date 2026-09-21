@@ -21,6 +21,7 @@ model User {
   languageCode     String?
   photoUrl         String?
   isBot            Boolean   @default(false)
+  hasStartedBot    Boolean   @default(false)
   passwordHash     String
   role             Role      @default(USER)
   adminRole        String?   // "SUPER_ADMIN", "ORDER_MANAGER", etc.
