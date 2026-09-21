@@ -166,10 +166,12 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
   // Numeric ID — GramJS uses a -100 prefix for channels/supergroups.
   // Strip it to get the bare ID that Telegram stores internally.
   if (/^-?\d+$/.test(chatIdentifier)) {
+    const isChannel = chatIdentifier.startsWith('-100');
+    const isGroup = !isChannel && chatIdentifier.startsWith('-');
     let bareId = chatIdentifier;
-    if (chatIdentifier.startsWith('-100')) {
+    if (isChannel) {
       bareId = chatIdentifier.slice(4);   // '-1003986179031' → '3986179031'
-    } else if (chatIdentifier.startsWith('-')) {
+    } else if (isGroup) {
       bareId = chatIdentifier.slice(1);   // '-1234567' → '1234567' (basic group)
     }
 
@@ -196,7 +198,23 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       );
       if (match) return entityToInputPeer(match);
     } catch (e) {
-      console.warn('[resolveEntity] dialog lookup failed, falling back to resolvePeer:', e);
+      console.warn('[resolveEntity] dialog lookup failed, will attempt direct peer construction:', e);
+    }
+
+    // Channel/supergroup not found in dialogs — construct inputPeer directly.
+    // accessHash=0 works for public channels and for channels the account is a member of
+    // (Telegram accepts it in messages.search and related calls).
+    if (isChannel) {
+      console.warn(`[resolveEntity] Channel ${chatIdentifier} not in dialogs; constructing inputPeerChannel with zero accessHash.`);
+      return {
+        _: 'inputPeerChannel',
+        channelId: BigInt(bareId),
+        accessHash: BigInt(0),
+      };
+    }
+    if (isGroup) {
+      console.warn(`[resolveEntity] Group ${chatIdentifier} not in dialogs; constructing inputPeerChat.`);
+      return { _: 'inputPeerChat', chatId: BigInt(bareId) };
     }
   }
 
