@@ -423,13 +423,15 @@ export const deleteJobController = async (req: AuthRequest, res: Response): Prom
 
     // Fetch first so we can derive the checkpoint key before deleting
     const job = await prisma.telegramImportJob.findUnique({ where: { id } });
+    if (!job) {
+      res.json({ success: true, message: 'Job already deleted or not found.' });
+      return;
+    }
     await prisma.telegramImportJob.delete({ where: { id } });
 
     // Clear the checkpoint that belongs to this specific source→target pair
-    if (job) {
-      const checkpointKey = `telegram_last_msg_id_${job.sourceChat.replace(/[@+]/g, '')}_${job.targetBot.replace(/[@+]/g, '')}`;
-      await prisma.setting.deleteMany({ where: { key: checkpointKey } });
-    }
+    const checkpointKey = `telegram_last_msg_id_${job.sourceChat.replace(/[@+]/g, '')}_${job.targetBot.replace(/[@+]/g, '')}`;
+    await prisma.setting.deleteMany({ where: { key: checkpointKey } });
 
     res.json({ success: true, message: 'Job and its checkpoint deleted.' });
   } catch (error: any) {
