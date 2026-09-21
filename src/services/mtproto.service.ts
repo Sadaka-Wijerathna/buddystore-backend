@@ -689,16 +689,20 @@ export async function listChats(adminId: string) {
 
   const chats = dialogs
     .map(d => {
-      const chat = d.chat;
+      // dialogCache can be populated by either iterDialogs (gives {chat: {...}})
+      // or resolveEntity/messages.getDialogs (gives raw entities with id/title directly).
+      // Use d.chat ?? d to handle both shapes safely.
+      const chat = d.chat ?? d;
+      if (!chat || chat.id == null) return null;
       return {
-        id: chat.id.toString(),
+        id: String(chat.id),
         title: chat.title || chat.displayName || '',
         username: chat.username || '',
         isChannel: chat.type === 'channel',
         isGroup: chat.type === 'group' || chat.type === 'supergroup',
       };
     })
-    .filter(c => c.title || c.username);
+    .filter((c): c is NonNullable<typeof c> => !!(c && (c.title || c.username)));
   return chats;
 }
 
