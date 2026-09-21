@@ -603,7 +603,7 @@ export async function startImport(
       let scanTick = 0;
       let hasMore = true;
 
-      // Use lower-level search directly for reliable pagination with offsetId
+      // ── Scan with inputMessagesFilterVideo ───────────────────────────────
       while (hasMore) {
         if (controller.stop) break;
 
@@ -630,11 +630,10 @@ export async function startImport(
 
         for (const msg of messages) {
           if (controller.stop) break;
+          offsetId = msg.id; // always advance pagination
           if (jobEndId && msg.id > jobEndId) continue;
-          
           videoIds.push(msg.id);
           scanTick++;
-          offsetId = msg.id; // prepare for next offset
         }
 
         if (scanTick % 100 === 0 && importProgressMap[adminId]) {
@@ -644,6 +643,61 @@ export async function startImport(
 
         if (messages.length < 100) {
           hasMore = false;
+        }
+      }
+
+      // ── Fallback: scan with inputMessagesFilterDocument if no videos found ─
+      // Some channels upload mp4 files as documents rather than native videos.
+      if (videoIds.length === 0 && !controller.stop) {
+        await updateJobProgress(job.id, adminId, {}, 'No native videos found, scanning documents...');
+        const docOffsetStart = jobStartId ? jobStartId - 1 : (lastMsgId ?? 0);
+        let docOffsetId = docOffsetStart;
+        let docHasMore = true;
+
+        while (docHasMore) {
+          if (controller.stop) break;
+
+          const res = await tg.call({
+            _: 'messages.search',
+            peer: sourceEntity as any,
+            q: '',
+            filter: { _: 'inputMessagesFilterDocument' },
+            minDate: 0,
+            maxDate: 0,
+            offsetId: docOffsetId,
+            addOffset: 0,
+            limit: 100,
+            maxId: 0,
+            minId: 0,
+            hash: Long.ZERO,
+          }) as any;
+
+          const messages = res.messages || [];
+          if (!messages.length) { docHasMore = false; break; }
+
+          for (const msg of messages) {
+            if (controller.stop) break;
+            docOffsetId = msg.id;
+            if (jobEndId && msg.id > jobEndId) continue;
+
+            // Only include document messages that look like videos
+            const doc = msg?.media?.document;
+            if (!doc) continue;
+            const isVideoDoc =
+              doc.mimeType?.startsWith('video/') ||
+              doc.attributes?.some((a: any) => a._ === 'documentAttributeVideo');
+            if (!isVideoDoc) continue;
+
+            videoIds.push(msg.id);
+            scanTick++;
+          }
+
+          if (scanTick % 100 === 0 && importProgressMap[adminId]) {
+            importProgressMap[adminId].message = `Scanning docs... ${scanTick} found`;
+            importProgressMap[adminId].total = scanTick;
+          }
+
+          if (messages.length < 100) docHasMore = false;
         }
       }
 
