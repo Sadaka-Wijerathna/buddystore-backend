@@ -186,7 +186,7 @@ export const startImportController = async (req: AuthRequest, res: Response): Pr
 export const stopImportController = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const adminId = req.user?.id || 'admin';
-    mtprotoService.stopImport(adminId);
+    await mtprotoService.stopImport(adminId);
     res.json({
       success: true,
       message: 'Import stopped.',

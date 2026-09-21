@@ -23,6 +23,16 @@ async function bootstrap() {
   startRecoverySweeper();
   startBroadcastWorker();
 
+  // Reset any orphan import jobs from previous server restarts
+  try {
+    await prisma.telegramImportJob.updateMany({
+      where: { status: 'RUNNING' },
+      data: { status: 'STOPPED', message: 'Interrupted by server restart. You can resume this job.' },
+    });
+  } catch (cleanErr) {
+    console.warn('Failed to clean up orphan import jobs:', cleanErr);
+  }
+
   // ─── Initialize Socket.io ───────────────────────────────────────────────────
   initSocket(httpServer);
   console.log('✅ Socket.io initialized');

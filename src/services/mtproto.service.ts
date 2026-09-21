@@ -470,17 +470,52 @@ export async function login(adminId: string, code: string, password?: string) {
   }
 }
 
-export function stopImport(adminId: string) {
+export async function stopImport(adminId: string) {
   const controller = activeImportControllers[adminId];
   if (controller) {
     controller.stop = true;
   }
+  delete activeImportControllers[adminId];
+
   const inMemory = importProgressMap[adminId];
   if (inMemory) {
     inMemory.status = 'stopped';
-    inMemory.message = 'Import cancellation requested...';
+    inMemory.message = 'Stopped by admin.';
     if (!inMemory.logs) inMemory.logs = [];
-    inMemory.logs.push(`[${new Date().toLocaleTimeString()}] Stop requested by admin.`);
+    inMemory.logs.push(`[${new Date().toLocaleTimeString()}] Stopped by admin.`);
+  } else {
+    importProgressMap[adminId] = {
+      status: 'stopped',
+      progress: 0,
+      total: 0,
+      message: 'Stopped by admin.',
+      logs: [`[${new Date().toLocaleTimeString()}] Stopped by admin.`]
+    };
+  }
+
+  // Persist STOPPED status to all currently RUNNING database jobs
+  try {
+    const runningJobs = await prisma.telegramImportJob.findMany({
+      where: { adminId, status: 'RUNNING' },
+    });
+    for (const job of runningJobs) {
+      let currentLogs: string[] = [];
+      try {
+        if (job.logs) currentLogs = JSON.parse(job.logs as string);
+      } catch (_) {}
+      currentLogs.push(`[${new Date().toLocaleTimeString()}] Stopped by admin.`);
+
+      await prisma.telegramImportJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'STOPPED',
+          message: 'Stopped by admin.',
+          logs: JSON.stringify(currentLogs),
+        },
+      });
+    }
+  } catch (dbErr) {
+    console.error('[stopImport] Failed to update DB:', dbErr);
   }
 }
 
