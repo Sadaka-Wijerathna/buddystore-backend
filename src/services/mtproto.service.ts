@@ -612,109 +612,91 @@ export async function startImport(
       const jobStartId = resumeJobId ? (job.startMessageId ?? undefined) : startMessageId;
       const jobEndId = resumeJobId ? (job.endMessageId ?? undefined) : endMessageId;
 
-      let offsetId = jobStartId ? jobStartId - 1 : (lastMsgId ?? 0);
-      
+      // ── messages.getHistory scan ─────────────────────────────────────────
+      // messages.search returns count but empty messages[] for broadcast channels
+      // where the account is a regular member (not admin). messages.getHistory
+      // is the only API that works for all members and returns actual content.
+      //
+      // Strategy:
+      //  • offsetId=0  → start from the newest message going backwards
+      //  • offsetId=jobStartId-1 → start from a specific message going backwards
+      //  • minId=lastMsgId   → stop when we reach already-imported messages
+      //
+      // Each page returns up to 100 messages; we filter video/document ones.
+
+      console.log('[scan] sourceEntity:', JSON.stringify(sourceEntity));
+
+      // For getHistory: offsetId=0 starts from the newest; jobStartId means
+      // "start at this message ID and go backwards from there".
+      let offsetId = jobStartId ? jobStartId : 0;
+      const minId = lastMsgId ?? 0;  // don't go below already-imported IDs
       let scanTick = 0;
       let hasMore = true;
 
-      // ── Scan with inputMessagesFilterVideo ───────────────────────────────
-      console.log('[scan] sourceEntity:', JSON.stringify(sourceEntity));
       while (hasMore) {
         if (controller.stop) break;
 
         const res = await tg.call({
-          _: 'messages.search',
+          _: 'messages.getHistory',
           peer: sourceEntity as any,
-          q: '',
-          filter: { _: 'inputMessagesFilterVideo' },
-          minDate: 0,
-          maxDate: 0,
-          offsetId,
+          offsetId,          // fetch messages with id < offsetId (0 = newest)
+          offsetDate: 0,
           addOffset: 0,
           limit: 100,
           maxId: 0,
-          minId: 0,
+          minId,             // stop when we reach already-imported messages
           hash: Long.ZERO,
         }) as any;
 
-        console.log(`[scan] inputMessagesFilterVideo → type=${res._}, count=${res.count ?? 'N/A'}, msgs=${res.messages?.length ?? 0}`);
-        const messages = res.messages || [];
-        if (!messages.length) {
-          hasMore = false;
-          break;
-        }
+        const messages: any[] = res.messages || [];
+        console.log(`[scan] getHistory page offsetId=${offsetId} → msgs=${messages.length}`);
 
+        if (!messages.length) { hasMore = false; break; }
+
+        let pageHadNew = false;
         for (const msg of messages) {
           if (controller.stop) break;
-          offsetId = msg.id; // always advance pagination
+
+          // getHistory returns newest→oldest; lowest id in page = next offset
+          if (msg.id <= minId) { hasMore = false; break; }
           if (jobEndId && msg.id > jobEndId) continue;
-          videoIds.push(msg.id);
-          scanTick++;
+
+          pageHadNew = true;
+
+          // Check: is this message a video?
+          if (msg._ !== 'message' || !msg.media) continue;
+
+          const media = msg.media;
+
+          // Native video (messageMediaPhoto won't match; messageMediaDocument for video)
+          if (media._ === 'messageMediaDocument' && media.document) {
+            const doc = media.document;
+            const isVideo =
+              doc.mimeType?.startsWith('video/') ||
+              doc.attributes?.some((a: any) =>
+                a._ === 'documentAttributeVideo' || a._ === 'documentAttributeAnimated'
+              );
+            if (isVideo) {
+              videoIds.push(msg.id);
+              scanTick++;
+            }
+          } else if (media._ === 'messageMediaWebPage') {
+            // skip link previews
+          } else if (media._ === 'messageMediaPhoto') {
+            // skip photos — not videos
+          }
         }
 
-        if (scanTick % 100 === 0 && importProgressMap[adminId]) {
+        // Advance offset to the oldest message in this page so next page goes further back
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg) offsetId = lastMsg.id;
+
+        if (importProgressMap[adminId] && scanTick % 200 === 0) {
           importProgressMap[adminId].message = `Scanning... ${scanTick} found`;
           importProgressMap[adminId].total = scanTick;
         }
 
-        if (messages.length < 100) {
-          hasMore = false;
-        }
-      }
-
-      // ── Fallback: scan with inputMessagesFilterDocument if no videos found ─
-      // Some channels upload mp4 files as documents rather than native videos.
-      if (videoIds.length === 0 && !controller.stop) {
-        await updateJobProgress(job.id, adminId, {}, 'No native videos found, scanning documents...');
-        const docOffsetStart = jobStartId ? jobStartId - 1 : (lastMsgId ?? 0);
-        let docOffsetId = docOffsetStart;
-        let docHasMore = true;
-
-        while (docHasMore) {
-          if (controller.stop) break;
-
-          const res = await tg.call({
-            _: 'messages.search',
-            peer: sourceEntity as any,
-            q: '',
-            filter: { _: 'inputMessagesFilterDocument' },
-            minDate: 0,
-            maxDate: 0,
-            offsetId: docOffsetId,
-            addOffset: 0,
-            limit: 100,
-            maxId: 0,
-            minId: 0,
-            hash: Long.ZERO,
-          }) as any;
-
-          const messages = res.messages || [];
-          if (!messages.length) { docHasMore = false; break; }
-
-          for (const msg of messages) {
-            if (controller.stop) break;
-            docOffsetId = msg.id;
-            if (jobEndId && msg.id > jobEndId) continue;
-
-            // Only include document messages that look like videos
-            const doc = msg?.media?.document;
-            if (!doc) continue;
-            const isVideoDoc =
-              doc.mimeType?.startsWith('video/') ||
-              doc.attributes?.some((a: any) => a._ === 'documentAttributeVideo');
-            if (!isVideoDoc) continue;
-
-            videoIds.push(msg.id);
-            scanTick++;
-          }
-
-          if (scanTick % 100 === 0 && importProgressMap[adminId]) {
-            importProgressMap[adminId].message = `Scanning docs... ${scanTick} found`;
-            importProgressMap[adminId].total = scanTick;
-          }
-
-          if (messages.length < 100) docHasMore = false;
-        }
+        if (messages.length < 100 || !pageHadNew) hasMore = false;
       }
 
       if (controller.stop) {
