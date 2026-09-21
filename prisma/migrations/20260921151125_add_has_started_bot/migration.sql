@@ -1,2 +1,2 @@
 -- AlterTable
-ALTER TABLE "User" ADD COLUMN "hasStartedBot" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "users" ADD COLUMN "hasStartedBot" BOOLEAN NOT NULL DEFAULT false;
