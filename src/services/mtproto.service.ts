@@ -9,7 +9,7 @@ import * as path from 'path';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // 5 restricted videos piped in parallel — mtcute handles per-connection concurrency internally.
-const STREAM_PIPE_CONCURRENCY = 5;
+const STREAM_PIPE_CONCURRENCY = 2;
 
 // ─── In-Memory State ──────────────────────────────────────────────────────────
 const activeLogins: Record<string, { tg: TelegramClient; phoneNumber: string; phoneCodeHash: string }> = {};
