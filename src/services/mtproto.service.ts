@@ -228,7 +228,21 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       console.warn('[resolveEntity] dialog lookup failed:', e);
     }
 
-    // 2. Ask mtcute to resolve peer using numeric ID (queries internal storage or gets channel info)
+    // 2. Try channels.getChannels with a zero accessHash — Telegram will return the
+    //    real channel object (including the correct accessHash) for public channels.
+    try {
+      const channelsRes = await tg.call({
+        _: 'channels.getChannels',
+        id: [{ _: 'inputChannel', channelId: Number(bareId), accessHash: Long.ZERO }],
+      }) as any;
+      const ch = channelsRes?.chats?.[0];
+      console.log(`[resolveEntity] channels.getChannels result:`, JSON.stringify({ id: ch?.id, type: ch?._, hasHash: !!ch?.accessHash }));
+      if (ch) return entityToInputPeer(ch);
+    } catch (e) {
+      console.warn(`[resolveEntity] channels.getChannels failed:`, e);
+    }
+
+    // 3. Ask mtcute to resolve peer using numeric ID (queries internal storage or gets channel info)
     try {
       const numId = Number(chatIdentifier);
       const peer = await tg.resolvePeer(numId);
@@ -237,7 +251,7 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       console.warn(`[resolveEntity] tg.resolvePeer(${chatIdentifier}) failed:`, e);
     }
 
-    // 3. Also try resolving with marked channel ID (-100...) if not already attempted
+    // 4. Also try resolving with marked channel ID (-100...) if not already attempted
     if (!isChannel) {
       try {
         const markedId = Number(`-100${bareId}`);
@@ -248,7 +262,7 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       }
     }
 
-    // 4. Fetch fresh dialogs bypassing cache
+    // 5. Fetch fresh dialogs bypassing cache
     try {
       const freshResult = await tg.call({
         _: 'messages.getDialogs',
@@ -604,6 +618,7 @@ export async function startImport(
       let hasMore = true;
 
       // ── Scan with inputMessagesFilterVideo ───────────────────────────────
+      console.log('[scan] sourceEntity:', JSON.stringify(sourceEntity));
       while (hasMore) {
         if (controller.stop) break;
 
@@ -622,6 +637,7 @@ export async function startImport(
           hash: Long.ZERO,
         }) as any;
 
+        console.log(`[scan] inputMessagesFilterVideo → type=${res._}, count=${res.count ?? 'N/A'}, msgs=${res.messages?.length ?? 0}`);
         const messages = res.messages || [];
         if (!messages.length) {
           hasMore = false;
