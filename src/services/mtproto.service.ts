@@ -1,24 +1,22 @@
 import { TelegramClient } from '@mtcute/node';
 import { Long } from '@mtcute/core';
-import pLimit from 'p-limit';
 import { convertFromGramjsSession } from '@mtcute/convert';
 import prisma from '../lib/prisma';
 import config from '../config';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-// 5 restricted videos piped in parallel — mtcute handles per-connection concurrency internally.
-const STREAM_PIPE_CONCURRENCY = 2;
+import type { Prisma } from '@prisma/client';
 
 // ─── In-Memory State ──────────────────────────────────────────────────────────
 const activeLogins: Record<string, { tg: TelegramClient; phoneNumber: string; phoneCodeHash: string }> = {};
 const activeClients: Record<string, TelegramClient> = {};
 const dialogCache: Record<string, { dialogs: any[]; fetchedAt: number }> = {};
 const DIALOG_CACHE_TTL_MS = 5 * 60 * 1000;
-const activeImportControllers: Record<string, { stop: boolean }> = {};
+const activeImportControllers: Record<string, { stop: boolean; abort?: AbortController }> = {};
 const importProgressMap: Record<string, ImportProgress> = {};
+// Cached API credentials — resolved once from config or DB, never re-fetched
+let _cachedCredentials: { apiId: number; apiHash: string } | null = null;
 
 interface ImportProgress {
   status: 'idle' | 'running' | 'stopped' | 'completed' | 'failed';
@@ -38,12 +36,16 @@ export interface TelegramAccount {
 
 // ─── Credentials ──────────────────────────────────────────────────────────────
 async function getApiCredentials() {
+  if (_cachedCredentials) return _cachedCredentials;
+
   let apiId = config.telegram.apiId;
   let apiHash = config.telegram.apiHash;
 
   if (!apiId || !apiHash) {
-    const apiIdSetting = await prisma.setting.findUnique({ where: { key: 'telegram_api_id' } });
-    const apiHashSetting = await prisma.setting.findUnique({ where: { key: 'telegram_api_hash' } });
+    const [apiIdSetting, apiHashSetting] = await Promise.all([
+      prisma.setting.findUnique({ where: { key: 'telegram_api_id' } }),
+      prisma.setting.findUnique({ where: { key: 'telegram_api_hash' } }),
+    ]);
     if (apiIdSetting) apiId = parseInt(apiIdSetting.value, 10);
     if (apiHashSetting) apiHash = apiHashSetting.value;
   }
@@ -51,7 +53,8 @@ async function getApiCredentials() {
   if (!apiId || !apiHash) {
     throw new Error('TELEGRAM_API_ID and TELEGRAM_API_HASH are not configured.');
   }
-  return { apiId, apiHash };
+  _cachedCredentials = { apiId: apiId as number, apiHash: apiHash as string };
+  return _cachedCredentials;
 }
 
 // ─── Session Helper ───────────────────────────────────────────────────────────
@@ -60,11 +63,12 @@ async function getApiCredentials() {
  * Auto-detects GramJS StringSession format and converts it using @mtcute/convert.
  * New sessions saved by this service are already in mtcute format.
  */
-async function buildConnectedClient(sessionString: string): Promise<TelegramClient> {
+async function buildConnectedClient(sessionString: string, adminId?: string): Promise<TelegramClient> {
   const { apiId, apiHash } = await getApiCredentials();
-  // Use a per-process temp path so each restart gets a fresh SQLite file.
+  // Use a per-admin temp path so each admin/account gets an isolated SQLite file.
   // The real session data is loaded via importSession(), not the file.
-  const storagePath = path.join(os.tmpdir(), `tg_mtcute_${String(apiId).slice(-4)}`);
+  const suffix = adminId ? `_${adminId}` : '';
+  const storagePath = path.join(os.tmpdir(), `tg_mtcute_${String(apiId).slice(-4)}${suffix}`);
   const tg = new TelegramClient({ apiId, apiHash, storage: storagePath });
 
   // GramJS sessions start with a digit (version byte) followed by base64.
@@ -152,6 +156,43 @@ function entityToInputPeer(entity: any): any {
   return target;
 }
 
+async function getOrFetchDialogs(tg: TelegramClient, adminId?: string, forceFresh: boolean = false): Promise<any[]> {
+  const now = Date.now();
+  if (!forceFresh && adminId && dialogCache[adminId] && now - dialogCache[adminId].fetchedAt < DIALOG_CACHE_TTL_MS) {
+    return dialogCache[adminId].dialogs;
+  }
+  const dialogs: any[] = [];
+  try {
+    for await (const d of tg.iterDialogs({ limit: 500 })) {
+      dialogs.push(d);
+    }
+    if (adminId) {
+      dialogCache[adminId] = { dialogs, fetchedAt: now };
+    }
+  } catch (err) {
+    console.warn('[mtproto] getOrFetchDialogs failed:', err);
+  }
+  return dialogs;
+}
+
+function findPeerInDialogs(dialogs: any[], bareId: string, chatIdentifier: string): any {
+  for (const d of dialogs) {
+    const peer = d.peer ?? d.chat ?? d;
+    const raw = peer.raw ?? peer;
+    const candidateIds = [
+      peer.id != null ? String(peer.id) : null,
+      raw.id != null ? String(raw.id) : null,
+      d.id != null ? String(d.id) : null,
+    ].filter(Boolean);
+
+    if (candidateIds.some(id => id === bareId || id === chatIdentifier || id === `-100${bareId}`)) {
+      if (peer.inputPeer) return peer.inputPeer;
+      return entityToInputPeer(raw);
+    }
+  }
+  return null;
+}
+
 /**
  * Resolves a Telegram entity from a username, numeric ID, public link, or private invite link.
  * Private invite links (t.me/+HASH or t.me/joinchat/HASH) cannot be resolved via getEntity;
@@ -188,42 +229,11 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       bareId = chatIdentifier.slice(1);   // '-1234567' → '1234567' (basic group)
     }
 
-    // 1. Try finding in dialogCache or fetching dialogs
+    // 1. Try finding in dialogCache or fetching dialogs via iterDialogs
     try {
-      const now = Date.now();
-      let entities: any[];
-
-      if (adminId && dialogCache[adminId] && now - dialogCache[adminId].fetchedAt < DIALOG_CACHE_TTL_MS) {
-        entities = dialogCache[adminId].dialogs;
-      } else {
-        const rawResult = await tg.call({
-          _: 'messages.getDialogs',
-          offsetDate: 0, offsetId: 0,
-          offsetPeer: { _: 'inputPeerEmpty' },
-          limit: 300, hash: Long.ZERO,
-        }) as any;
-        entities = [...(rawResult.chats ?? []), ...(rawResult.users ?? [])];
-        if (adminId) dialogCache[adminId] = { dialogs: entities, fetchedAt: now };
-      }
-
-      // Match by bare ID, signed ID, or marked channel ID (-100...)
-      // Support both mtcute Dialog objects (where id is in e.chat.id) and raw TL entities (e.id)
-      const match = entities.find((e: any) => {
-        const candidateIds = [
-          e.id != null ? String(e.id) : null,
-          e.chat?.id != null ? String(e.chat.id) : null,
-          e.chat?.raw?.id != null ? String(e.chat.raw.id) : null,
-        ].filter(Boolean);
-
-        return candidateIds.some(
-          id => id === bareId || id === chatIdentifier || id === `-100${bareId}`
-        );
-      });
-
-      if (match) {
-        if (match.chat?.inputPeer) return match.chat.inputPeer;
-        return entityToInputPeer(match.chat?.raw ?? match.chat ?? match);
-      }
+      const dialogs = await getOrFetchDialogs(tg, adminId);
+      const matched = findPeerInDialogs(dialogs, bareId, chatIdentifier);
+      if (matched) return matched;
     } catch (e) {
       console.warn('[resolveEntity] dialog lookup failed:', e);
     }
@@ -262,21 +272,13 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
       }
     }
 
-    // 5. Fetch fresh dialogs bypassing cache
+    // 5. Fetch fresh dialogs bypassing cache via iterDialogs
     try {
-      const freshResult = await tg.call({
-        _: 'messages.getDialogs',
-        offsetDate: 0, offsetId: 0,
-        offsetPeer: { _: 'inputPeerEmpty' },
-        limit: 500, hash: Long.ZERO,
-      }) as any;
-      const allChats = [...(freshResult.chats ?? []), ...(freshResult.users ?? [])];
-      const freshMatch = allChats.find((c: any) =>
-        String(c.id) === bareId || String(c.id) === chatIdentifier || String(c.id) === `-100${bareId}`
-      );
-      if (freshMatch) return entityToInputPeer(freshMatch);
+      const freshDialogs = await getOrFetchDialogs(tg, adminId, true);
+      const freshMatch = findPeerInDialogs(freshDialogs, bareId, chatIdentifier);
+      if (freshMatch) return freshMatch;
     } catch (e) {
-      console.warn('[resolveEntity] fresh getDialogs lookup failed:', e);
+      console.warn('[resolveEntity] fresh dialog lookup failed:', e);
     }
 
     if (isGroup) {
@@ -292,21 +294,6 @@ async function resolveEntity(tg: TelegramClient, chatIdentifier: string, adminId
   return tg.resolvePeer(chatIdentifier as any);
 }
 
-
-/**
- * Checks if a Telegram message contains a video document (mtcute).
- */
-function isVideoMessage(msg: any): boolean {
-  if (msg._ !== 'message' || !msg.media) return false;
-  if (msg.media._ === 'messageMediaDocument' && msg.media.document?._ === 'document') {
-    const doc = msg.media.document;
-    return (
-      (doc.mimeType?.startsWith('video/') ?? false) ||
-      (doc.attributes?.some((a: any) => a._ === 'documentAttributeVideo') ?? false)
-    );
-  }
-  return false;
-}
 
 /**
  * Returns a connected and authenticated TelegramClient instance if a session exists.
@@ -356,7 +343,7 @@ export async function getConnectedClient(adminId: string, verifyPing: boolean = 
 
   for (let attempt = 0; attempt <= 5; attempt++) {
     try {
-      const tg = await buildConnectedClient(sessionString);
+      const tg = await buildConnectedClient(sessionString, adminId);
       await tg.getMe(); // verify auth
       activeClients[adminId] = tg;
       return tg;
@@ -474,6 +461,7 @@ export async function stopImport(adminId: string) {
   const controller = activeImportControllers[adminId];
   if (controller) {
     controller.stop = true;
+    if (controller.abort) controller.abort.abort();
   }
   delete activeImportControllers[adminId];
 
@@ -524,9 +512,6 @@ export async function stopImport(adminId: string) {
  * Supports resumeJobId for resuming interrupted imports.
  * startMessageId / endMessageId define an optional message ID range (inclusive).
  */
-// @ts-ignore
-import type { Prisma } from '@prisma/client';
-
 function extractFloodWaitSeconds(err: any): number | null {
   if (!err) return null;
   if (typeof err.seconds === 'number' && err.seconds > 0) return err.seconds;
@@ -637,8 +622,8 @@ export async function startImport(
     logs: [`[${new Date().toLocaleTimeString()}] Started...`],
   };
 
-  activeImportControllers[adminId] = { stop: false };
-  const controller = activeImportControllers[adminId];
+  const controller = { stop: false, abort: new AbortController() };
+  activeImportControllers[adminId] = controller;
 
   (async () => {
     try {
@@ -801,7 +786,8 @@ export async function startImport(
             const msg = msgs[0];
             if (!msg || !msg.media) {
               processedCount++;
-              await updateJobProgress(job.id, adminId, { progress: processedCount }, `Skipped ${msgId}: no media.`);
+              const shouldWriteDb = processedCount % 5 === 0 || processedCount >= totalVideos;
+              await updateJobProgress(job.id, adminId, { progress: processedCount }, `Skipped ${msgId}: no media.`, shouldWriteDb);
               imported = true;
               break;
             }
@@ -810,10 +796,13 @@ export async function startImport(
               // Prefer telegramUniqueId (Telegram's content-addressable file identifier).
               // It is the same value the bot stores when it receives the video, so this
               // check is 100% accurate and survives re-imports from the same source.
+              // uniqueFileId / fileUniqueId — mtcute HL getters (if present)
+              // Fall back to RawDocument.raw.id (the TL document id as a string) —
+              // accessed through the typed .raw getter, not a deep raw-TL chain.
               const srcUniqueId: string | undefined =
                 (msg.media as any).uniqueFileId ??
                 (msg.media as any).fileUniqueId ??
-                (msg as any).raw?.media?.document?.id?.toString();   // last-resort: doc id
+                (msg.media as any).raw?.id?.toString();
 
               if (srcUniqueId) {
                 const existing = await prisma.videos.findFirst({
@@ -821,107 +810,184 @@ export async function startImport(
                 });
                 if (existing) {
                   processedCount++;
-                  await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped (uniqueId: ${srcUniqueId}) - Already in DB.`);
+                  const shouldWriteDb = processedCount % 5 === 0 || processedCount >= totalVideos;
+                  await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped (uniqueId: ${srcUniqueId}) - Already in DB.`, shouldWriteDb);
                   imported = true;
                   break;
                 }
-              } else if ((msg.media as any).fileSize) {
-                // Fallback: fileSize + duration (less reliable, kept for safety)
-                const fileSize = String((msg.media as any).fileSize || 0);
-                const duration = (msg.media as any).duration || 0;
+              } else if ((msg.media as any).raw?.size) {
+                // Fallback: file size + duration (less reliable, kept for safety).
+                // RawDocument has no .fileSize HL getter — read from .raw.size (TL document.size).
+                const fileSize = String((msg.media as any).raw?.size || 0);
+                const duration = (msg.media as any).duration || 0; // duration IS a typed getter
                 const existing = await prisma.videos.findFirst({
                   where: { botId: targetBotDbId, fileSize, duration }
                 });
                 if (existing) {
                   processedCount++;
-                  await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`);
+                  const shouldWriteDb = processedCount % 5 === 0 || processedCount >= totalVideos;
+                  await updateJobProgress(job.id, adminId, { progress: processedCount }, `[Duplicate] Skipped video (Size: ${fileSize}, Duration: ${duration}s) - Already in DB.`, shouldWriteDb);
                   imported = true;
                   break;
                 }
               }
             }
 
-            let stream: any = null;
+            // ── Fast path: try forwarding directly without downloading ──────
+            // If the source channel allows forwards, forwardMessages() takes < 100ms
+            // and uses 0 bandwidth/disk. If restricted (CHAT_FORWARDS_RESTRICTED),
+            // it throws and we fall back to downloadToFile + sendMedia.
+            let forwarded = false;
             try {
-              stream = await tg.downloadAsStream(msg.media as any);
+              await tg.forwardMessages({
+                toChatId: targetEntity,
+                messages: [msg],
+              });
+              forwarded = true;
+            } catch (fwdErr: any) {
+              const floodSeconds = extractFloodWaitSeconds(fwdErr);
+              if (floodSeconds) throw fwdErr; // Let outer handler manage flood wait
 
-              let fileName = `video_${msg.id}.mp4`;
-              if (msg.media.type === 'document' && (msg.media as any).fileName) {
-                fileName = (msg.media as any).fileName || fileName;
-              }
+              const fwdMsg = String(fwdErr?.message || fwdErr);
+              console.log(`[import] Forward not available for msg ${msg.id} (${fwdMsg}), falling back to direct download...`);
+            }
 
-              // ── Extract video attributes from the raw TL document ────────────
-              // msg.raw gives the raw TL message; the document lives in media.document.
-              const rawDoc: any =
-                (msg as any).raw?.media?.document ??
-                (msg.media as any).raw?.document ??
-                (msg.media as any).document;
-
-              const videoAttr: any = rawDoc?.attributes?.find(
-                (a: any) => a._ === 'documentAttributeVideo'
+            if (!forwarded) {
+              // ── Download to a temp file first (avoids holding the whole video in RAM) ─
+              // Restricted media has short-lived fileReferences and Telegram DCs can drop
+              // mid-transfer. By separating download from upload we can retry each phase
+              // independently, and the server never holds more than OS page-cache chunks.
+              const tmpFile = path.join(
+                os.tmpdir(),
+                `tg_vid_${adminId}_${msg.id}_${Date.now()}.tmp`
               );
-              const duration: number  = videoAttr?.duration ?? 0;
-              const width: number     = videoAttr?.w        ?? 0;
-              const height: number    = videoAttr?.h        ?? 0;
-              const supportsStreaming: boolean = videoAttr?.supportsStreaming ?? true;
-
-              // ── Download the best available thumbnail ────────────────────────
-              // Telegram provides photoSize thumbs on documents. Pick the largest
-              // non-animated one (type 's'/'m'/'x'/'y') and download it.
-              let thumbBuffer: Buffer | undefined;
               try {
-                const thumbs: any[] = rawDoc?.thumbs ?? [];
-                // Find a "photo" thumb (not animated/video strip which has _ === 'videoSize')
-                const bestThumb = thumbs
-                  .filter((t: any) => t._ === 'photoSize' || t._ === 'photoStrippedSize' || t._ === 'photoSizeProgressive')
-                  .sort((a: any, b: any) => (b.size ?? 0) - (a.size ?? 0))[0];
+                // msg.media is a Video | Document — both extend RawDocument which extends
+                // FileLocation. All attributes are available as typed getters; no raw TL
+                // digging needed. downloadToFile() accepts FileLocation directly.
+                const mediaDoc = msg.media as any; // Video | Document (RawDocument subclass)
 
-                if (bestThumb) {
-                  // Build an InputPhotoFileLocation to download the thumb
-                  const inputLocation: any = {
-                    _: 'inputDocumentFileLocation',
-                    id: rawDoc.id,
-                    accessHash: rawDoc.accessHash,
-                    fileReference: rawDoc.fileReference,
-                    thumbSize: bestThumb.type ?? 's',
-                  };
-                  const rawThumb = await tg.downloadAsBuffer({ inputMedia: inputLocation } as any)
-                    .catch(() => undefined);
-                  thumbBuffer = rawThumb ? Buffer.from(rawThumb) : undefined;
+                // Note: fileName is not sent in sendPayload (not a field on InputMediaVideo)
+                const duration: number  = mediaDoc.duration  ?? 0;
+                const width: number     = mediaDoc.width     ?? 0;
+                const height: number    = mediaDoc.height    ?? 0;
+
+                // supportsStreaming lives only in the raw TL attribute — read through
+                // the typed .raw getter on RawDocument instead of deep-chaining.
+                const rawVideoAttr: any = (mediaDoc.raw as any)
+                  ?.attributes?.find((a: any) => a._ === 'documentAttributeVideo');
+                const supportsStreaming: boolean = rawVideoAttr?.supportsStreaming ?? true;
+
+                // ── Phase 1: Download to disk ────────────────────────────────────
+                // downloadToFile() accepts FileLocation (which Video/Document ARE).
+                // FileLocation.dcId is the typed DC id — no raw TL digging needed.
+                // stallTimeout (90s) aborts if DC goes silent mid-chunk.
+                const docDcId: number | undefined = mediaDoc.dcId;
+                await tg.downloadToFile(tmpFile, mediaDoc, {
+                  dcId: docDcId,
+                  partSize: 512,
+                  stallTimeout: 90_000,
+                  abortSignal: controller.abort.signal,
+                });
+
+                // ── Phase 2: Thumbnail (after video is safely on disk) ───────────
+                // Use RawDocument.thumbnails (Thumbnail extends FileLocation) — pass
+                // the Thumbnail object directly to downloadAsBuffer.  No manual
+                // inputDocumentFileLocation construction needed.
+                let thumbBuffer: Buffer | undefined;
+                try {
+                  const thumbnails: readonly any[] = mediaDoc.thumbnails ?? [];
+
+                  // Pick the largest DC-stored thumbnail. Exclude inline/video types
+                  // (i = stripped, j = outline, u/v/f = video previews) — those either
+                  // have no DC location or are not JPEG images Telegram accepts as thumbs.
+                  const INLINE_TYPES = new Set(['i', 'j', 'u', 'v', 'f', 'pfp_em', 'pfp_st']);
+                  const bestThumb = thumbnails
+                    .filter((t: any) => !INLINE_TYPES.has(t.type))
+                    .sort((a: any, b: any) => (b.width ?? 0) - (a.width ?? 0))[0];
+
+                  if (bestThumb) {
+                    // Thumbnail IS a FileLocation — downloadAsBuffer resolves its
+                    // location lazily using the DC recorded in the thumbnail itself.
+                    const rawThumb = await tg.downloadAsBuffer(bestThumb, {
+                      dcId: bestThumb.dcId ?? docDcId,
+                      stallTimeout: 15_000,
+                      abortSignal: controller.abort.signal,
+                    }).catch(() => undefined);
+                    if (rawThumb) {
+                      const buf = Buffer.from(rawThumb);
+                      // Telegram rejects thumbnails over 200 KB — silently discard.
+                      thumbBuffer = buf.length <= 200 * 1024 ? buf : undefined;
+                    }
+                  }
+
+                  // Fallback: stripped thumbnail (type 'i') — its FileLocation.location
+                  // IS the inline Uint8Array bytes; no network call is made.
+                  // Inflate per Telegram spec: prepend JPEG SOI + APP0 header.
+                  if (!thumbBuffer) {
+                    const stripped = mediaDoc.getThumbnail?.('i') ??
+                      thumbnails.find((t: any) => t.type === 'i');
+                    if (stripped) {
+                      const loc = stripped.location;
+                      const src: Uint8Array = typeof loc === 'function' ? loc() : loc;
+                      if (src instanceof Uint8Array && src[0] === 0x01 && src.length > 3) {
+                        const header = Buffer.from([
+                          0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46,
+                          0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+                        ]);
+                        const inflated = Buffer.concat([header, Buffer.from(src.slice(1))]);
+                        // Discard if somehow over 200 KB (shouldn't happen for strip thumbs)
+                        thumbBuffer = inflated.length <= 200 * 1024 ? inflated : undefined;
+                      }
+                    }
+                  }
+                } catch (thumbErr) {
+                  console.warn(`[import] Could not download thumbnail for msg ${msg.id}:`, thumbErr);
                 }
-              } catch (thumbErr) {
-                // Non-fatal — we'll send without a thumbnail rather than fail the whole video
-                console.warn(`[import] Could not download thumbnail for msg ${msg.id}:`, thumbErr);
-              }
 
-              // ── Send as a real video (not a raw document) ────────────────────
-              const sendPayload: any = {
-                type: 'video',
-                file: stream,
-                fileName,
-                caption: msg.text || '',
-                duration,
-                width,
-                height,
-                supportsStreaming,
-              };
-              if (thumbBuffer && thumbBuffer.length > 0) {
-                sendPayload.thumb = thumbBuffer;
-              }
+                // ── Phase 3: Upload from disk stream ────────────────────────────
+                // InputMediaVideo shape: type, file, caption, duration, width, height,
+                // supportsStreaming, thumb (InputFileLike — Buffer is valid).
+                // Note: fileName is NOT a field on InputMediaVideo (only on InputMediaDocument)
+                // so it is intentionally omitted here.
+                const sendPayload: any = {
+                  type: 'video',
+                  file: fs.createReadStream(tmpFile),
+                  caption: msg.text || '',
+                  duration,
+                  width,
+                  height,
+                  supportsStreaming,
+                };
+                if (thumbBuffer && thumbBuffer.length > 0) {
+                  sendPayload.thumb = thumbBuffer;
+                }
+                thumbBuffer = undefined; // release before the upload starts
 
-              await tg.sendMedia(targetEntity, sendPayload as any);
-            } finally {
-              // Guarantee stream cleanup to prevent memory buildup on Render's 512MB RAM
-              if (stream && typeof stream.destroy === 'function') {
-                try { stream.destroy(); } catch (_) {}
+                sendPayload.abortSignal = controller.abort.signal;
+                await tg.sendMedia(targetEntity, sendPayload as any);
+              } finally {
+                // Always delete the temp file — even on error or OOM restart the
+                // OS will clear /tmp on next boot, but clean up eagerly here.
+                try { fs.unlinkSync(tmpFile); } catch (_) {}
               }
             }
 
             processedCount++;
             videosSinceLastCooldown++;
-            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Imported video ${processedCount}/${totalVideos}`);
+            const shouldWriteDb = processedCount % 5 === 0 || processedCount >= totalVideos;
+            await updateJobProgress(
+              job.id,
+              adminId,
+              { progress: processedCount },
+              `Imported video ${processedCount}/${totalVideos}${forwarded ? ' (fast forward)' : ''}`,
+              shouldWriteDb
+            );
 
-            if (skipExistingCheck) {
+            // Only write the resume watermark on the same cadence as DB progress writes (every 5
+            // videos). On an interrupted job the last checkpoint may be up to 4 videos stale,
+            // but the duplicate-check will catch any re-processed videos on resume.
+            if (skipExistingCheck && shouldWriteDb) {
               const key = `telegram_last_msg_id_${sourceChat.replace(/[@+]/g, '')}_${targetBot.replace(/[@+]/g, '')}`;
               await prisma.setting.upsert({
                 where: { key },
@@ -942,7 +1008,7 @@ export async function startImport(
                 `[Batch Cooldown] 40 videos uploaded. Resting 25s to avoid Telegram rate limits...`
               );
               for (let s = 0; s < 25 && !controller.stop; s += 2) {
-                await new Promise(r => setTimeout(r, Math.min(2000, (25 - s) * 1000)));
+                await new Promise(r => setTimeout(r, 2000));
               }
             } else {
               // Polite breathing delay (1.5s) between video uploads to keep Telegram rate limits healthy
@@ -950,6 +1016,9 @@ export async function startImport(
             }
 
           } catch (err: any) {
+            const errMsg: string = err?.message || String(err);
+
+            // ── Flood wait ───────────────────────────────────────────────────
             const floodSeconds = extractFloodWaitSeconds(err);
             if (floodSeconds && floodSeconds > 0) {
               // If flood wait is excessively long (> 1 hour), pause job gracefully so admin can resume later
@@ -970,7 +1039,6 @@ export async function startImport(
                 { progress: processedCount, message: `Flood wait: pausing for ${waitTime}s...` },
                 `[Flood Wait] Telegram requested ${floodSeconds}s pause. Waiting ${waitTime}s before retrying msg ${msgId}...`
               );
-              // Wait in small increments while checking for cancellation
               for (let s = 0; s < waitTime && !controller.stop; s += 2) {
                 await new Promise(r => setTimeout(r, Math.min(2000, (waitTime - s) * 1000)));
               }
@@ -978,10 +1046,30 @@ export async function startImport(
               continue;
             }
 
-            // Non-flood error (e.g. corrupted file, invalid media)
+            // ── Unexpected EOF / file reference expired ───────────────────────
+            // Restricted channel media has short-lived fileReference tokens.
+            // An EOF mid-download means the DC closed the connection (expired ref
+            // or transient network hiccup). Re-fetching the message gives us a
+            // fresh fileReference; retry up to maxAttempts before skipping.
+            const isEof = /unexpected eof|stream reading error|file reference/i.test(errMsg);
+            if (isEof && attempts < maxAttempts) {
+              const backoff = attempts * 3000; // 3s, 6s, 9s, 12s
+              await updateJobProgress(
+                job.id, adminId,
+                { progress: processedCount },
+                `[EOF Retry ${attempts}/${maxAttempts}] msg ${msgId}: ${errMsg.slice(0, 80)} — retrying in ${backoff / 1000}s...`
+              );
+              await new Promise(r => setTimeout(r, backoff));
+              // Loop continues: getMessages() at the top of the while-loop
+              // fetches the message again → fresh fileReference
+              continue;
+            }
+
+            // ── Non-retryable error — skip this video ─────────────────────────
             processedCount++;
-            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Error on msg ${msgId}: ${err.message || err}`);
-            imported = true; // Skip to next video
+            const shouldWriteDb = processedCount % 5 === 0 || processedCount >= totalVideos;
+            await updateJobProgress(job.id, adminId, { progress: processedCount }, `Error on msg ${msgId}: ${errMsg}`, shouldWriteDb);
+            imported = true;
           }
         }
       }
@@ -996,7 +1084,7 @@ export async function startImport(
     } catch (err: any) {
       await updateJobProgress(job.id, adminId, { status: 'FAILED' }, `Fatal Error: ${err.message}`);
     } finally {
-      if (activeImportControllers[adminId]) {
+      if (activeImportControllers[adminId] === controller) {
         delete activeImportControllers[adminId];
       }
     }
@@ -1039,31 +1127,23 @@ export async function getCheckpoint(sourceChat: string, targetBot: string) {
 export async function listChats(adminId: string) {
   const tg = await getConnectedClient(adminId);
   if (!tg) throw new Error('Not authenticated.');
-  let dialogs: any[] = [];
-  const now = Date.now();
-  if (dialogCache[adminId] && (now - dialogCache[adminId].fetchedAt < DIALOG_CACHE_TTL_MS)) {
-    dialogs = dialogCache[adminId].dialogs;
-  } else {
-    // We can use iterDialogs here without issue
-    for await (const dialog of tg.iterDialogs({ limit: 100 })) {
-      dialogs.push(dialog);
-    }
-    dialogCache[adminId] = { dialogs, fetchedAt: now };
-  }
+  const dialogs = await getOrFetchDialogs(tg, adminId);
 
   const chats = dialogs
     .map(d => {
-      // dialogCache can be populated by either iterDialogs (gives {chat: {...}})
-      // or resolveEntity/messages.getDialogs (gives raw entities with id/title directly).
-      // Use d.chat ?? d to handle both shapes safely.
-      const chat = d.chat ?? d;
-      if (!chat || chat.id == null) return null;
+      const peer = d.peer ?? d.chat ?? d;
+      if (!peer || peer.id == null) return null;
+      const raw = peer.raw ?? peer;
+      const title = peer.title || peer.displayName || raw.title || '';
+      const username = peer.username || raw.username || '';
+      const isChannel = peer.chatType === 'channel' || peer.type === 'channel' || raw._ === 'channel';
+      const isGroup = peer.isGroup || peer.chatType === 'group' || peer.chatType === 'supergroup' || peer.type === 'group' || raw._ === 'chat';
       return {
-        id: String(chat.id),
-        title: chat.title || chat.displayName || '',
-        username: chat.username || '',
-        isChannel: chat.type === 'channel',
-        isGroup: chat.type === 'group' || chat.type === 'supergroup',
+        id: String(peer.id),
+        title,
+        username,
+        isChannel,
+        isGroup,
       };
     })
     .filter((c): c is NonNullable<typeof c> => !!(c && (c.title || c.username)));
