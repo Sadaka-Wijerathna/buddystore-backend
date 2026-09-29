@@ -9,7 +9,7 @@ import { memCache } from '../lib/cache';
 export const getUserByTelegramId = async (req: Request, res: Response): Promise<void> => {
   try {
     const { telegramId } = req.params;
-    const parsed = BigInt(telegramId);
+    const parsed = BigInt(String(telegramId));
 
     const user = await prisma.user.findUnique({
       where: { telegramId: parsed },
