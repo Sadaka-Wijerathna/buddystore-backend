@@ -948,11 +948,14 @@ export async function startImport(
                 // ── Phase 3: Upload from disk stream ────────────────────────────
                 // InputMediaVideo shape: type, file, caption, duration, width, height,
                 // supportsStreaming, thumb (InputFileLike — Buffer is valid).
-                // Note: fileName is NOT a field on InputMediaVideo (only on InputMediaDocument)
-                // so it is intentionally omitted here.
+                // Pass the string path instead of a raw ReadStream and explicitly provide fileSize.
+                // This prevents mtcute from buffering the entire file into memory to compute size/chunks,
+                // fixing the OOM error that happens with restricted videos.
+                const fileSize = fs.statSync(tmpFile).size;
                 const sendPayload: any = {
                   type: 'video',
-                  file: fs.createReadStream(tmpFile),
+                  file: tmpFile,
+                  fileSize,
                   caption: msg.text || '',
                   duration,
                   width,

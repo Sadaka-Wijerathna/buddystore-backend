@@ -4,6 +4,30 @@ import prisma from '../lib/prisma';
 import { hasActiveBadge } from './badge.controller';
 import { memCache } from '../lib/cache';
 
+// GET /api/v1/public/u/:telegramId
+// Returns only telegramUsername — used by the /u/[telegramId] redirect page
+export const getUserByTelegramId = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { telegramId } = req.params;
+    const parsed = BigInt(telegramId);
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: parsed },
+      select: { telegramUsername: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    res.json({ success: true, data: { telegramUsername: user.telegramUsername } });
+  } catch {
+    res.status(400).json({ success: false, message: 'Invalid Telegram ID' });
+  }
+};
+
+
 // GET /api/v1/public/special-collections
 export const getPublicSpecialCollections = async (_req: Request, res: Response): Promise<void> => {
   try {

@@ -6,6 +6,9 @@ import { authenticate } from '../middleware/auth.middleware';
 
 const router = Router();
 
+// Resolve a telegramId to a Telegram username (for the /u/[telegramId] QR redirect)
+router.get('/u/:telegramId', publicController.getUserByTelegramId);
+
 // Special Bot Collections (Trending Videos) — public list
 /**
  * @swagger
