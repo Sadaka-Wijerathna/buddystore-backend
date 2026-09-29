@@ -20,8 +20,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@mtcute/convert": "^0.32.2",
-    "@mtcute/node": "^0.32.2",
+    "@mtcute/convert": "^0.32.3",
+    "@mtcute/node": "^0.32.3",
     "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^7.5.0",
     "@sentry/node": "^10.74.0",
