@@ -127,6 +127,7 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
       method: 'POST',
       headers: importerHeaders,
       body: JSON.stringify({
+        job_id: job.id,                              // Prisma DB ID → Python uses this in webhook callbacks
         admin_id: adminId,
         session_string: sessionString,
         source_chat: sourceChat,
@@ -379,6 +380,46 @@ router.get('/session-status', async (req: AuthRequest, res: Response) => {
     const adminId = req.user?.id || 'admin';
     const session = await getHydrogramSession(adminId);
     res.json({ success: true, data: { hasSession: !!session } });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ── GET /api/v1/admin/importer/status ─────────────────────────────────────────
+// Replaces the old mtcute /telegram/status. Returns auth state and running job.
+router.get('/status', async (req: AuthRequest, res: Response) => {
+  try {
+    const adminId = req.user?.id || 'admin';
+    const session = await getHydrogramSession(adminId);
+    
+    // Find active job in DB
+    const activeJob = await prisma.telegramImportJob.findFirst({
+      where: { adminId, status: 'RUNNING' },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const importStatus = activeJob ? {
+      status: 'running',
+      progress: activeJob.progress || 0,
+      total: activeJob.total || 0,
+      message: activeJob.message || '',
+      logs: activeJob.logs ? JSON.parse(activeJob.logs) : [],
+    } : {
+      status: 'idle',
+      progress: 0,
+      total: 0,
+      message: '',
+      logs: [],
+    };
+
+    res.json({
+      success: true,
+      data: {
+        authorized: !!session,
+        sessionInfo: session ? { id: adminId, firstName: 'Hydrogram Admin', username: 'connected' } : null,
+        importStatus
+      }
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
