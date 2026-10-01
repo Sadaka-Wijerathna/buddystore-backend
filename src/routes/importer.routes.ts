@@ -16,6 +16,14 @@ const IMPORTER_URL = process.env.VIDEO_IMPORTER_URL!;         // https://video-i
 const IMPORTER_SECRET = process.env.IMPORTER_API_SECRET!;     // shared secret
 const BACKEND_URL = process.env.BACKEND_URL!;                 // https://buddystore-backend.onrender.com
 
+// ── Startup validation: warn if BACKEND_URL looks like local dev ─────────────
+if (IMPORTER_URL && BACKEND_URL && (BACKEND_URL.includes('localhost') || BACKEND_URL.includes('127.0.0.1'))) {
+  console.warn(
+    `[importer] ⚠️  BACKEND_URL is "${BACKEND_URL}" — webhook callbacks from the Python ` +
+    `service won't work! Set BACKEND_URL=https://buddystore-backend.onrender.com in Render.`
+  );
+}
+
 const importerHeaders = {
   'Content-Type': 'application/json',
   'x-api-secret': IMPORTER_SECRET,
