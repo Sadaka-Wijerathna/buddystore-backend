@@ -9,12 +9,122 @@ import type { AuthRequest } from '../middleware/auth.middleware';
 
 const router = Router();
 
-// All importer routes require an authenticated admin
-router.use(authenticate, requireAdmin);
-
 const IMPORTER_URL = process.env.VIDEO_IMPORTER_URL!;         // https://video-importer.onrender.com
 const IMPORTER_SECRET = process.env.IMPORTER_API_SECRET!;     // shared secret
 const BACKEND_URL = process.env.BACKEND_URL!;                 // https://buddystore-backend.onrender.com
+
+// ── Helper: persist checkpoint watermark ─────────────────────────────────────
+async function saveCheckpointMsgId(sourceChat: string, targetBot: string, msgId: number) {
+  const key = `telegram_last_msg_id_${sourceChat.replace(/[@+]/g, '')}_${targetBot.replace(/[@+]/g, '')}`;
+  await prisma.setting.upsert({
+    where: { key },
+    update: { value: String(msgId) },
+    create: { key, value: String(msgId) },
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Service-to-service routes (Python → Node). Validated via x-api-secret,
+// NOT JWT. These MUST be defined BEFORE router.use(authenticate, requireAdmin).
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/v1/admin/importer/webhook ──────────────────────────────────────
+// Receives progress callbacks FROM the Python service.
+// Updates the job in BuddyStore DB so the frontend can poll it via /status.
+router.post('/webhook', async (req: Request, res: Response) => {
+  // Validate shared secret (Python sends x-api-secret, not a JWT)
+  const secret = req.headers['x-api-secret'] as string;
+  if (IMPORTER_SECRET && secret !== IMPORTER_SECRET) {
+    res.sendStatus(401); return;
+  }
+
+  try {
+    const {
+      jobId, adminId, status, progress, total,
+      message, logs, checkpointMsgId,
+    } = req.body;
+
+    if (!jobId) { res.sendStatus(400); return; }
+
+    const dbStatus =
+      status === 'running'   ? 'RUNNING'   :
+      status === 'completed' ? 'COMPLETED' :
+      status === 'stopped'   ? 'STOPPED'   :
+      'FAILED';
+
+    // Get the job first so we know sourceChat/targetBot for checkpoint saving
+    const existingJob = await prisma.telegramImportJob.findUnique({ where: { id: jobId } });
+
+    if (!existingJob) {
+      console.warn(`[importer.webhook] Job not found in DB: "${jobId}" (adminId: ${adminId})`);
+    }
+
+    await prisma.telegramImportJob.update({
+      where: { id: jobId },
+      data: {
+        status: dbStatus,
+        progress: progress ?? undefined,
+        total: total ?? undefined,
+        message: message ?? undefined,
+        logs: logs ? JSON.stringify(logs) : undefined,
+      },
+    }).catch((err: any) => {
+      console.warn(`[importer.webhook] DB update failed for job "${jobId}":`, err?.message);
+    });
+
+    // Save checkpoint watermark — enables "skip existing" resume on next run
+    if (checkpointMsgId && existingJob) {
+      await saveCheckpointMsgId(
+        existingJob.sourceChat,
+        existingJob.targetBot,
+        checkpointMsgId,
+      ).catch(() => {});
+    }
+
+    res.sendStatus(200);
+  } catch (error: any) {
+    console.error('[importer.webhook]', error);
+    res.sendStatus(500);
+  }
+});
+
+// ── GET /api/v1/admin/importer/check-duplicate ───────────────────────────────
+// Called by Python service to check if a video already exists in BuddyStore DB.
+router.get('/check-duplicate', async (req: Request, res: Response) => {
+  const secret = req.headers['x-api-secret'] as string;
+  if (IMPORTER_SECRET && secret !== IMPORTER_SECRET) {
+    res.status(401).json({ isDuplicate: false }); return;
+  }
+
+  try {
+    const { botId, telegramUniqueId, fileSize, duration } = req.query as Record<string, string>;
+    if (!botId) { res.json({ isDuplicate: false }); return; }
+
+    let existing = null;
+
+    if (telegramUniqueId) {
+      existing = await prisma.videos.findFirst({
+        where: { botId, telegramUniqueId },
+      });
+    } else if (fileSize && duration) {
+      existing = await prisma.videos.findFirst({
+        where: { botId, fileSize, duration: parseInt(duration, 10) },
+      });
+    }
+
+    res.json({ isDuplicate: !!existing });
+  } catch (error: any) {
+    console.error('[importer.checkDuplicate]', error);
+    res.json({ isDuplicate: false }); // fail open — don't block import
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Admin-facing routes (browser → Node). Require JWT auth.
+// ══════════════════════════════════════════════════════════════════════════════
+router.use(authenticate, requireAdmin);
+
+// (IMPORTER_URL, IMPORTER_SECRET, BACKEND_URL declared above auth middleware)
 
 // ── Startup validation: warn if BACKEND_URL looks like local dev ─────────────
 if (IMPORTER_URL && BACKEND_URL && (BACKEND_URL.includes('localhost') || BACKEND_URL.includes('127.0.0.1'))) {
@@ -53,15 +163,7 @@ async function getCheckpointMsgId(sourceChat: string, targetBot: string): Promis
   return setting?.value ? parseInt(setting.value, 10) : null;
 }
 
-// ── Helper: persist checkpoint watermark ─────────────────────────────────────
-async function saveCheckpointMsgId(sourceChat: string, targetBot: string, msgId: number) {
-  const key = `telegram_last_msg_id_${sourceChat.replace(/[@+]/g, '')}_${targetBot.replace(/[@+]/g, '')}`;
-  await prisma.setting.upsert({
-    where: { key },
-    update: { value: String(msgId) },
-    create: { key, value: String(msgId) },
-  });
-}
+// (saveCheckpointMsgId declared above auth middleware)
 
 // ── POST /api/v1/admin/importer/start ────────────────────────────────────────
 // Creates a job record in DB, then delegates everything (scan + download/upload) to Python.
@@ -185,94 +287,7 @@ router.post('/stop', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ── POST /api/v1/admin/importer/webhook ──────────────────────────────────────
-// Receives progress callbacks FROM the Python service (no auth — internal only).
-// Updates the job in BuddyStore DB so the frontend can poll it via /status.
-router.post('/webhook', async (req: Request, res: Response) => {
-  try {
-    const {
-      jobId, adminId, status, progress, total,
-      message, logs, checkpointMsgId,
-    } = req.body;
-
-    if (!jobId) { res.sendStatus(400); return; }
-
-    const dbStatus =
-      status === 'running'   ? 'RUNNING'   :
-      status === 'completed' ? 'COMPLETED' :
-      status === 'stopped'   ? 'STOPPED'   :
-      'FAILED';
-
-    // Get the job first so we know sourceChat/targetBot for checkpoint saving
-    const existingJob = await prisma.telegramImportJob.findUnique({ where: { id: jobId } });
-
-    if (!existingJob) {
-      console.warn(`[importer.webhook] Job not found in DB: "${jobId}" (adminId: ${adminId})`);
-    }
-
-    await prisma.telegramImportJob.update({
-      where: { id: jobId },
-      data: {
-        status: dbStatus,
-        progress: progress ?? undefined,
-        total: total ?? undefined,
-        message: message ?? undefined,
-        logs: logs ? JSON.stringify(logs) : undefined,
-      },
-    }).catch((err: any) => {
-      console.warn(`[importer.webhook] DB update failed for job "${jobId}":`, err?.message);
-    }); // don't crash — job may have been deleted
-
-    // Save checkpoint watermark — enables "skip existing" resume on next run
-    if (checkpointMsgId && existingJob) {
-      await saveCheckpointMsgId(
-        existingJob.sourceChat,
-        existingJob.targetBot,
-        checkpointMsgId,
-      ).catch(() => {});
-    }
-
-    res.sendStatus(200);
-  } catch (error: any) {
-    console.error('[importer.webhook]', error);
-    res.sendStatus(500);
-  }
-});
-
-// ── GET /api/v1/admin/importer/check-duplicate ───────────────────────────────
-// Called by Python service to check if a video already exists in BuddyStore DB.
-// Python passes x-api-secret, not a user JWT, so this route bypasses auth middleware.
-// IMPORTANT: add this BEFORE router.use(authenticate, requireAdmin) — done below via sub-router.
-// We handle it separately at the end of the file with a raw express handler.
-router.get('/check-duplicate', async (req: Request, res: Response) => {
-  // Validate API secret instead of user JWT
-  const secret = req.headers['x-api-secret'] as string;
-  if (IMPORTER_SECRET && secret !== IMPORTER_SECRET) {
-    res.status(401).json({ isDuplicate: false }); return;
-  }
-
-  try {
-    const { botId, telegramUniqueId, fileSize, duration } = req.query as Record<string, string>;
-    if (!botId) { res.json({ isDuplicate: false }); return; }
-
-    let existing = null;
-
-    if (telegramUniqueId) {
-      existing = await prisma.videos.findFirst({
-        where: { botId, telegramUniqueId },
-      });
-    } else if (fileSize && duration) {
-      existing = await prisma.videos.findFirst({
-        where: { botId, fileSize, duration: parseInt(duration, 10) },
-      });
-    }
-
-    res.json({ isDuplicate: !!existing });
-  } catch (error: any) {
-    console.error('[importer.checkDuplicate]', error);
-    res.json({ isDuplicate: false }); // fail open — don't block import
-  }
-});
+// (webhook and check-duplicate routes are defined above auth middleware)
 
 // ── POST /api/v1/admin/importer/send-code ────────────────────────────────────
 router.post('/send-code', async (req: AuthRequest, res: Response) => {
