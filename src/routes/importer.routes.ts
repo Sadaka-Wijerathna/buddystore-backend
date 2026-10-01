@@ -213,7 +213,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
         progress: progress ?? undefined,
         total: total ?? undefined,
         message: message ?? undefined,
-        logs: logs ? JSON.stringify(logs) : undefined,
+        logs: logs ? logs : undefined,
       },
     }).catch(() => {}); // ignore if job was already deleted
 
@@ -403,7 +403,7 @@ router.get('/status', async (req: AuthRequest, res: Response) => {
       progress: activeJob.progress || 0,
       total: activeJob.total || 0,
       message: activeJob.message || '',
-      logs: activeJob.logs ? JSON.parse(activeJob.logs) : [],
+      logs: activeJob.logs ? activeJob.logs : [],
     } : {
       status: 'idle',
       progress: 0,
