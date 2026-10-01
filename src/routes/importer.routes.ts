@@ -128,6 +128,7 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
       headers: importerHeaders,
       body: JSON.stringify({
         admin_id: adminId,
+        job_db_id: job.id,                           // ← DB job ID so Python uses it in webhook callbacks
         session_string: sessionString,
         source_chat: sourceChat,
         target_chat: targetBot,
@@ -205,6 +206,10 @@ router.post('/webhook', async (req: Request, res: Response) => {
     // Get the job first so we know sourceChat/targetBot for checkpoint saving
     const existingJob = await prisma.telegramImportJob.findUnique({ where: { id: jobId } });
 
+    if (!existingJob) {
+      console.warn(`[importer.webhook] Job not found in DB: "${jobId}" (adminId: ${adminId})`);
+    }
+
     await prisma.telegramImportJob.update({
       where: { id: jobId },
       data: {
@@ -214,7 +219,9 @@ router.post('/webhook', async (req: Request, res: Response) => {
         message: message ?? undefined,
         logs: logs ? JSON.stringify(logs) : undefined,
       },
-    }).catch(() => {}); // ignore if job was already deleted
+    }).catch((err: any) => {
+      console.warn(`[importer.webhook] DB update failed for job "${jobId}":`, err?.message);
+    }); // don't crash — job may have been deleted
 
     // Save checkpoint watermark — enables "skip existing" resume on next run
     if (checkpointMsgId && existingJob) {
