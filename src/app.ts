@@ -14,6 +14,7 @@ import adminRoutes from './routes/admin.routes';
 import publicRoutes from './routes/public.routes';
 import pdfAdminRoutes from './routes/pdf.routes';
 import badgeRoutes from './routes/badge.routes';
+import importerRoutes from './routes/importer.routes';
 
 // Middleware
 import { errorHandler, notFound } from './middleware/error.middleware';
@@ -141,6 +142,9 @@ if (process.env.ENABLE_DOCS !== 'false') {
 // Apply the general rate-limiter to all API routes (catch-all abuse protection)
 app.use('/api/v1/auth', generalLimiter, authRoutes);
 app.use('/api/v1/orders', generalLimiter, orderRoutes);
+// ⚠️  importer MUST be registered before the broader '/api/v1/admin' prefix
+// so Express doesn't swallow /api/v1/admin/importer/* in adminRoutes first.
+app.use('/api/v1/admin/importer', generalLimiter, importerRoutes);
 app.use('/api/v1/admin', generalLimiter, adminRoutes);
 app.use('/api/v1/admin', generalLimiter, pdfAdminRoutes);
 app.use('/api/v1/public', generalLimiter, publicRoutes);

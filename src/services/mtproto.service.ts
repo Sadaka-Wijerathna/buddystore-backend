@@ -881,12 +881,19 @@ export async function startImport(
                 // ── Phase 1: Download to disk ────────────────────────────────────
                 // downloadToFile() accepts FileLocation (which Video/Document ARE).
                 // FileLocation.dcId is the typed DC id — no raw TL digging needed.
-                // stallTimeout (90s) aborts if DC goes silent mid-chunk.
+                // stallTimeout: use 5 min for large files — Telegram DCs can pause
+                // between chunks on big transfers; 90s was too aggressive.
+                // partSize: use smaller chunks (128KB) for large files to reduce
+                // the chance of a mid-chunk EOF killing the whole download.
                 const docDcId: number | undefined = mediaDoc.dcId;
+                const fileSizeBytes: number = (mediaDoc.raw as any)?.size ?? 0;
+                const fileSizeMB = fileSizeBytes / (1024 * 1024);
+                const partSize = fileSizeMB > 200 ? 128 : fileSizeMB > 50 ? 256 : 512;
+                const stallTimeout = fileSizeMB > 200 ? 300_000 : fileSizeMB > 50 ? 180_000 : 90_000;
                 await tg.downloadToFile(tmpFile, mediaDoc, {
                   dcId: docDcId,
-                  partSize: 512,
-                  stallTimeout: 90_000,
+                  partSize,
+                  stallTimeout,
                   abortSignal: controller.abort.signal,
                 });
 
@@ -1054,17 +1061,20 @@ export async function startImport(
             // An EOF mid-download means the DC closed the connection (expired ref
             // or transient network hiccup). Re-fetching the message gives us a
             // fresh fileReference; retry up to maxAttempts before skipping.
+            // Backoff: exponential with jitter — 5s, 15s, 30s, 60s, 120s.
+            // This gives Telegram DCs time to recover and avoids hammering.
             const isEof = /unexpected eof|stream reading error|file reference/i.test(errMsg);
             if (isEof && attempts < maxAttempts) {
-              const backoff = attempts * 3000; // 3s, 6s, 9s, 12s
+              const backoffBase = [5, 15, 30, 60, 120];
+              const backoff = (backoffBase[attempts - 1] ?? 120) * 1000;
               await updateJobProgress(
                 job.id, adminId,
                 { progress: processedCount },
-                `[EOF Retry ${attempts}/${maxAttempts}] msg ${msgId}: ${errMsg.slice(0, 80)} — retrying in ${backoff / 1000}s...`
+                `[EOF Retry ${attempts}/${maxAttempts}] msg ${msgId} — DC dropped connection. Retrying in ${backoff / 1000}s with fresh file reference...`
               );
               await new Promise(r => setTimeout(r, backoff));
               // Loop continues: getMessages() at the top of the while-loop
-              // fetches the message again → fresh fileReference
+              // fetches the message again → fresh fileReference from Telegram
               continue;
             }
 
