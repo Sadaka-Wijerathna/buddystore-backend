@@ -370,6 +370,8 @@ export async function logoutClient(adminId: string, phoneNumberToLogout?: string
       delete activeClients[adminId];
     }
     await prisma.setting.deleteMany({ where: { key: `telegram_mtproto_session_${adminId}` } });
+    // Also clean up legacy Hydrogram session
+    await prisma.setting.deleteMany({ where: { key: `hydrogram_session_${adminId}` } });
     return;
   }
 
@@ -384,6 +386,11 @@ export async function logoutClient(adminId: string, phoneNumberToLogout?: string
 
   accounts = accounts.filter(a => a.phoneNumber !== targetPhone);
 
+  // Clean up the Hydrogram session for this specific phone number
+  await prisma.setting.deleteMany({
+    where: { key: `hydrogram_session_${adminId}_${targetPhone}` },
+  });
+
   if (accounts.length > 0) {
     await prisma.setting.upsert({ where: { key: `telegram_accounts_${adminId}` }, update: { value: JSON.stringify(accounts) }, create: { key: `telegram_accounts_${adminId}`, value: JSON.stringify(accounts) } });
     if (isLoggingOutActive) {
@@ -393,6 +400,8 @@ export async function logoutClient(adminId: string, phoneNumberToLogout?: string
     await prisma.setting.deleteMany({ where: { key: `telegram_accounts_${adminId}` } });
     await prisma.setting.deleteMany({ where: { key: `telegram_active_account_${adminId}` } });
     await prisma.setting.deleteMany({ where: { key: `telegram_mtproto_session_${adminId}` } });
+    // Clean up legacy Hydrogram session when all accounts are removed
+    await prisma.setting.deleteMany({ where: { key: `hydrogram_session_${adminId}` } });
   }
 }
 

@@ -139,12 +139,48 @@ const importerHeaders = {
   'x-api-secret': IMPORTER_SECRET,
 };
 
+// ── Helper: get active phone number for an admin (mirrors mtproto.service logic) ─
+async function getActivePhone(adminId: string): Promise<string | null> {
+  const activeSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_active_account_${adminId}` },
+  });
+  if (activeSetting?.value) return activeSetting.value;
+  // Fallback: first account in accounts list
+  const accountsSetting = await prisma.setting.findUnique({
+    where: { key: `telegram_accounts_${adminId}` },
+  });
+  const accounts: { phoneNumber: string }[] = accountsSetting?.value
+    ? JSON.parse(accountsSetting.value)
+    : [];
+  return accounts[0]?.phoneNumber || null;
+}
+
+// ── Helper: build Hydrogram session DB key for an admin + phone ───────────────
+function hydrogramKey(adminId: string, phone: string | null): string {
+  // Per-account key: hydrogram_session_<adminId>_<phone>
+  // Falls back to legacy key (hydrogram_session_<adminId>) when phone is unknown
+  return phone ? `hydrogram_session_${adminId}_${phone}` : `hydrogram_session_${adminId}`;
+}
+
 // ── Helper: get active Hydrogram session string for an admin ─────────────────
+// Looks up the session for the currently active Telegram phone number first,
+// then falls back to the legacy single-key session for backward compatibility.
 async function getHydrogramSession(adminId: string): Promise<string | null> {
-  const setting = await prisma.setting.findUnique({
+  const phone = await getActivePhone(adminId);
+
+  // Try per-account key first
+  if (phone) {
+    const perAccount = await prisma.setting.findUnique({
+      where: { key: hydrogramKey(adminId, phone) },
+    });
+    if (perAccount?.value) return perAccount.value;
+  }
+
+  // Fall back to legacy key (sessions saved before this update)
+  const legacy = await prisma.setting.findUnique({
     where: { key: `hydrogram_session_${adminId}` },
   });
-  return setting?.value || null;
+  return legacy?.value || null;
 }
 
 // ── Helper: parse Telegram message link → message ID ────────────────────────
@@ -345,11 +381,13 @@ router.post('/generate-session', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Store Hydrogram session string in BuddyStore DB
+    // Store Hydrogram session string in BuddyStore DB (per active phone number)
+    const phone = await getActivePhone(adminId);
+    const key = hydrogramKey(adminId, phone);
     await prisma.setting.upsert({
-      where: { key: `hydrogram_session_${adminId}` },
+      where: { key },
       update: { value: data.session_string },
-      create: { key: `hydrogram_session_${adminId}`, value: data.session_string },
+      create: { key, value: data.session_string },
     });
 
     res.json({ success: true, message: 'Hydrogram session created and saved.' });
@@ -382,10 +420,12 @@ router.post('/generate-session-2fa', async (req: AuthRequest, res: Response) => 
       return;
     }
 
+    const phone2fa = await getActivePhone(adminId);
+    const key2fa = hydrogramKey(adminId, phone2fa);
     await prisma.setting.upsert({
-      where: { key: `hydrogram_session_${adminId}` },
+      where: { key: key2fa },
       update: { value: data.session_string },
-      create: { key: `hydrogram_session_${adminId}`, value: data.session_string },
+      create: { key: key2fa, value: data.session_string },
     });
 
     res.json({ success: true, message: 'Hydrogram session (2FA) created and saved.' });
