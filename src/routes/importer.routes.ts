@@ -299,6 +299,90 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ── POST /api/v1/admin/importer/resume ───────────────────────────────────────
+router.post('/resume', async (req: AuthRequest, res: Response) => {
+  try {
+    const { jobId } = req.body;
+    const adminId = req.user?.id || 'admin';
+
+    if (!jobId) {
+      res.status(400).json({ success: false, message: 'jobId is required to resume.' });
+      return;
+    }
+
+    const job = await prisma.telegramImportJob.findUnique({
+      where: { id: jobId }
+    });
+
+    if (!job) {
+      res.status(404).json({ success: false, message: 'Job not found.' });
+      return;
+    }
+    
+    if (job.status === 'COMPLETED') {
+      res.status(400).json({ success: false, message: 'Job already completed.' });
+      return;
+    }
+
+    const sessionString = await getHydrogramSession(adminId);
+    if (!sessionString) {
+      res.status(400).json({
+        success: false,
+        message: 'No Hydrogram session found. Please re-login using the "Connect Hydrogram" flow.',
+      });
+      return;
+    }
+
+    const shouldSkipExisting = job.skipExisting !== undefined ? Boolean(job.skipExisting) : true;
+    const lastMsgId = shouldSkipExisting
+      ? await getCheckpointMsgId(job.sourceChat, job.targetBot)
+      : null;
+
+    const botHandle = job.targetBot.replace(/^@+/, '');
+    const botRecord = await prisma.bot.findUnique({ where: { name: botHandle } });
+
+    const webhookUrl    = `${BACKEND_URL}/api/v1/admin/importer/webhook`;
+    const dupCheckUrl   = `${BACKEND_URL}/api/v1/admin/importer/check-duplicate`;
+
+    const response = await fetch(`${IMPORTER_URL}/start-job`, {
+      method: 'POST',
+      headers: importerHeaders,
+      body: JSON.stringify({
+        admin_id: adminId,
+        job_db_id: job.id,
+        session_string: sessionString,
+        source_chat: job.sourceChat,
+        target_chat: job.targetBot,
+        msg_ids: [],
+        webhook_url: webhookUrl,
+        target_bot_db_id: botRecord?.id ?? null,
+        skip_existing: shouldSkipExisting,
+        last_msg_id: lastMsgId ?? null,
+        start_message_id: job.startMessageId ?? null,
+        end_message_id: job.endMessageId ?? null,
+        limit_count: job.limitCount ?? null,
+        duplicate_check_url: botRecord ? dupCheckUrl : null,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      res.status(500).json({ success: false, message: `Importer service error: ${err}` });
+      return;
+    }
+
+    await prisma.telegramImportJob.update({
+      where: { id: job.id },
+      data: { status: 'RUNNING', message: 'Resumed via importer service...' },
+    });
+
+    res.json({ success: true, message: 'Job resumed successfully.' });
+  } catch (error: any) {
+    console.error('[importer.resume]', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to resume import.' });
+  }
+});
+
 // ── POST /api/v1/admin/importer/stop ─────────────────────────────────────────
 router.post('/stop', async (req: AuthRequest, res: Response) => {
   try {
