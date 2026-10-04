@@ -88,6 +88,57 @@ router.post('/webhook', async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /api/v1/admin/importer/auto-resume ──────────────────────────────────
+// Called by Python service on startup via x-api-secret (NOT JWT).
+// Finds any jobs that were RUNNING or recently STOPPED due to a server restart
+// and re-triggers them automatically.
+router.post('/auto-resume', async (req: Request, res: Response) => {
+  const secret = req.headers['x-api-secret'] as string;
+  if (IMPORTER_SECRET && secret !== IMPORTER_SECRET) {
+    res.sendStatus(401); return;
+  }
+
+  try {
+    // Look for jobs that were interrupted: RUNNING (shouldn't exist after server.ts
+    // cleanup) OR STOPPED with the specific restart message set by server.ts.
+    const interruptedJobs = await prisma.telegramImportJob.findMany({
+      where: {
+        OR: [
+          { status: 'RUNNING' },
+          {
+            status: 'STOPPED',
+            message: { contains: 'Interrupted by server restart' },
+          },
+        ],
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 10, // safety cap — never resume more than 10 jobs at once
+    });
+
+    if (interruptedJobs.length === 0) {
+      res.json({ resumed: 0 }); return;
+    }
+
+    console.log(`[importer.auto-resume] Python service restarted. Attempting to resume ${interruptedJobs.length} interrupted jobs...`);
+
+    let resumedCount = 0;
+    for (const job of interruptedJobs) {
+      try {
+        await resumeJob(job.id, job.adminId);
+        resumedCount++;
+        console.log(`[importer.auto-resume] Resumed job ${job.id}`);
+      } catch (err: any) {
+        console.error(`[importer.auto-resume] Failed to resume job ${job.id}:`, err.message);
+      }
+    }
+
+    res.json({ resumed: resumedCount });
+  } catch (error: any) {
+    console.error('[importer.auto-resume]', error);
+    res.sendStatus(500);
+  }
+});
+
 // ── GET /api/v1/admin/importer/check-duplicate ───────────────────────────────
 // Called by Python service to check if a video already exists in BuddyStore DB.
 router.get('/check-duplicate', async (req: Request, res: Response) => {
@@ -375,41 +426,7 @@ router.post('/resume', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ── POST /api/v1/admin/importer/auto-resume ──────────────────────────────────
-router.post('/auto-resume', async (req: Request, res: Response) => {
-  const secret = req.headers['x-api-secret'] as string;
-  if (IMPORTER_SECRET && secret !== IMPORTER_SECRET) {
-    res.sendStatus(401); return;
-  }
-
-  try {
-    const runningJobs = await prisma.telegramImportJob.findMany({
-      where: { status: 'RUNNING' }
-    });
-
-    if (runningJobs.length === 0) {
-      res.json({ resumed: 0 }); return;
-    }
-
-    console.log(`[importer.auto-resume] Python service restarted. Attempting to resume ${runningJobs.length} running jobs...`);
-
-    let resumedCount = 0;
-    for (const job of runningJobs) {
-      try {
-        await resumeJob(job.id, job.adminId);
-        resumedCount++;
-        console.log(`[importer.auto-resume] Resumed job ${job.id}`);
-      } catch (err: any) {
-        console.error(`[importer.auto-resume] Failed to resume job ${job.id}:`, err.message);
-      }
-    }
-
-    res.json({ resumed: resumedCount });
-  } catch (error: any) {
-    console.error('[importer.auto-resume]', error);
-    res.sendStatus(500);
-  }
-});
+// (auto-resume is defined above the auth middleware — see top of this file)
 
 // ── POST /api/v1/admin/importer/stop ─────────────────────────────────────────
 router.post('/stop', async (req: AuthRequest, res: Response) => {
