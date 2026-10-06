@@ -393,6 +393,8 @@ async function resumeJob(jobId: string, adminId: string) {
       end_message_id: job.endMessageId ?? null,
       limit_count: job.limitCount ?? null,
       duplicate_check_url: botRecord ? dupCheckUrl : null,
+      initial_progress: job.progress || 0,
+      original_total: job.total || 0,
     }),
   });
 
