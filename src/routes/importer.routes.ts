@@ -395,6 +395,7 @@ async function resumeJob(jobId: string, adminId: string) {
       duplicate_check_url: botRecord ? dupCheckUrl : null,
       initial_progress: job.progress || 0,
       original_total: job.total || 0,
+      initial_logs: job.logs ? JSON.parse(job.logs) : [],
     }),
   });
 
