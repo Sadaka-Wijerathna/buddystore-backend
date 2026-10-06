@@ -352,11 +352,10 @@ router.post('/start', async (req: AuthRequest, res: Response) => {
   }
 });
 
+
 // ── Helper: Resume Job ────────────────────────────────────────────────────────
 async function resumeJob(jobId: string, adminId: string) {
-  const job = await prisma.telegramImportJob.findUnique({
-    where: { id: jobId }
-  });
+  const job = await prisma.telegramImportJob.findUnique({ where: { id: jobId } });
 
   if (!job) throw new Error('Job not found.');
   if (job.status === 'COMPLETED') throw new Error('Job already completed.');
@@ -364,6 +363,21 @@ async function resumeJob(jobId: string, adminId: string) {
   const sessionString = await getHydrogramSession(adminId);
   if (!sessionString) {
     throw new Error('No Hydrogram session found. Please re-login using the "Connect Hydrogram" flow.');
+  }
+
+  // ── Stop any stale in-memory job on the Python service first ─────────────
+  // This prevents the 409 "Import already running" error when the Python
+  // service has a stuck/zombie job from a previous crashed run.
+  try {
+    await fetch(`${IMPORTER_URL}/stop-job`, {
+      method: 'POST',
+      headers: importerHeaders,
+      body: JSON.stringify({ admin_id: adminId }),
+    });
+    // Brief pause so the Python event loop can notice the stop_flag
+    await new Promise(r => setTimeout(r, 300));
+  } catch (stopErr: any) {
+    console.warn('[importer.resume] Pre-stop request failed (continuing anyway):', stopErr.message);
   }
 
   const shouldSkipExisting = job.skipExisting !== undefined ? Boolean(job.skipExisting) : true;
@@ -374,8 +388,8 @@ async function resumeJob(jobId: string, adminId: string) {
   const botHandle = job.targetBot.replace(/^@+/, '');
   const botRecord = await prisma.bot.findUnique({ where: { name: botHandle } });
 
-  const webhookUrl    = `${BACKEND_URL}/api/v1/admin/importer/webhook`;
-  const dupCheckUrl   = `${BACKEND_URL}/api/v1/admin/importer/check-duplicate`;
+  const webhookUrl  = `${BACKEND_URL}/api/v1/admin/importer/webhook`;
+  const dupCheckUrl = `${BACKEND_URL}/api/v1/admin/importer/check-duplicate`;
 
   const response = await fetch(`${IMPORTER_URL}/start-job`, {
     method: 'POST',
