@@ -465,8 +465,26 @@ export const resetCheckpointsController = async (_req: AuthRequest, res: Respons
  * Delete ALL import job records (clear history).
  * DELETE /api/v1/admin/telegram/jobs
  */
-export const clearAllJobsController = async (_req: AuthRequest, res: Response): Promise<void> => {
+export const clearAllJobsController = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const adminId = req.user?.id || 'admin';
+
+    // Stop any running job on the python server
+    try {
+      const IMPORTER_URL = process.env.VIDEO_IMPORTER_URL || 'http://localhost:10000';
+      const importerHeaders = {
+        'Content-Type': 'application/json',
+        'x-api-secret': process.env.VIDEO_IMPORTER_API_SECRET || '',
+      };
+      await fetch(`${IMPORTER_URL}/stop-job`, {
+        method: 'POST',
+        headers: importerHeaders,
+        body: JSON.stringify({ admin_id: adminId }),
+      });
+    } catch (e) {
+      console.warn('[clearAllJobsController] Failed to stop python job:', e);
+    }
+
     const { count } = await prisma.telegramImportJob.deleteMany({});
 
     // Also wipe all checkpoint settings so the next import truly starts fresh.
