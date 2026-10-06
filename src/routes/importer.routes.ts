@@ -66,7 +66,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
         progress: progress ?? undefined,
         total: total ?? undefined,
         message: message ?? undefined,
-        logs: logs ? JSON.stringify(logs) : undefined,
+        logs: logs || undefined,
       },
     }).catch((err: any) => {
       console.warn(`[importer.webhook] DB update failed for job "${jobId}":`, err?.message);
@@ -397,7 +397,7 @@ async function resumeJob(jobId: string, adminId: string) {
       duplicate_check_url: botRecord ? dupCheckUrl : null,
       initial_progress: job.progress || 0,
       original_total: job.total || 0,
-      initial_logs: job.logs ? JSON.parse(job.logs) : [],
+      initial_logs: Array.isArray(job.logs) ? job.logs : (typeof job.logs === 'string' ? JSON.parse(job.logs) : []),
     }),
   });
 
