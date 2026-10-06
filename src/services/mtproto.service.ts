@@ -1174,7 +1174,7 @@ export async function listChats(adminId: string) {
 
 
 export async function getStatus(adminId: string) {
-  if (importProgressMap[adminId]) {
+  if (activeImportControllers[adminId] && importProgressMap[adminId]) {
     return importProgressMap[adminId];
   }
 
