@@ -157,7 +157,9 @@ router.get('/check-duplicate', async (req: Request, res: Response) => {
       existing = await prisma.videos.findFirst({
         where: { botId, telegramUniqueId },
       });
-    } else if (fileSize && duration) {
+    } 
+    
+    if (!existing && fileSize && duration) {
       existing = await prisma.videos.findFirst({
         where: { botId, fileSize, duration: parseInt(duration, 10) },
       });
