@@ -4,10 +4,10 @@ import prisma from '../lib/prisma';
 import config from '../config';
 import { uploadBanner, uploadThumbnail } from '../lib/cloudinary';
 
-// ─── BuddySpecial1Bot ─────────────────────────────────────────────────────────
+// ─── BuddySpecial2Bot ─────────────────────────────────────────────────────────
 // Delivers free video collections via Telegram deep links.
 //
-// Deep link format: https://t.me/BuddySpecial1Bot?start=<slug>
+// Deep link format: https://t.me/BuddySpecial2Bot?start=<slug>
 // e.g.  ?start=anu_kanu → sends all SpecialVideos in that collection
 //
 // Admin collection mode (per collection, toggled from admin panel):
@@ -119,7 +119,7 @@ async function processSpecialVideoBatch() {
           data: { totalVideos: { increment: count } }
         });
         const total = await prisma.specialVideo.count({ where: { collectionId: colId } });
-        console.log(`[BuddySpecial1Bot] Batch saved ${count} videos. (Collection ${colId} total: ${total})`);
+        console.log(`[BuddySpecial2Bot] Batch saved ${count} videos. (Collection ${colId} total: ${total})`);
       }
 
       // ── Async thumbnail upload pass — fire and forget ──────────────────
@@ -129,7 +129,7 @@ async function processSpecialVideoBatch() {
       }
     }
   } catch (e) {
-    console.error(`[BuddySpecial1Bot] Batch save error:`, e);
+    console.error(`[BuddySpecial2Bot] Batch save error:`, e);
   }
 }
 
@@ -144,9 +144,9 @@ function uploadSpecialVideoThumbnailsAsync(videos: SpecialVideoBatchItem[]) {
           where: { fileId: v.fileId },
           data: { thumbnailUrl: url }
         });
-        console.log(`[BuddySpecial1Bot] Thumbnail saved for special video ${v.fileId.slice(0, 12)}...`);
+        console.log(`[BuddySpecial2Bot] Thumbnail saved for special video ${v.fileId.slice(0, 12)}...`);
       } catch (err) {
-        console.error(`[BuddySpecial1Bot] Thumbnail upload failed for ${v.fileId.slice(0, 12)}:`, err);
+        console.error(`[BuddySpecial2Bot] Thumbnail upload failed for ${v.fileId.slice(0, 12)}:`, err);
       }
     })
   ).catch(() => {});
@@ -217,7 +217,7 @@ async function queueMediaToCollection(
       const thumbnail = ctx.message?.video?.thumbnail ||
                         (ctx.message?.document as any)?.thumbnail;
       if (thumbnail) {
-        console.log(`[BuddySpecial1Bot] Processing thumbnail: ${thumbnail.width}x${thumbnail.height}, size: ${thumbnail.file_size}`);
+        console.log(`[BuddySpecial2Bot] Processing thumbnail: ${thumbnail.width}x${thumbnail.height}, size: ${thumbnail.file_size}`);
         bannerFileId = thumbnail.file_id;
       }
     }
@@ -230,9 +230,9 @@ async function queueMediaToCollection(
             where: { id: collection.id },
             data: { banner: bannerUrl }
           });
-          console.log(`[BuddySpecial1Bot] Auto-set banner for collection: ${collection.title} (${bannerUrl})`);
+          console.log(`[BuddySpecial2Bot] Auto-set banner for collection: ${collection.title} (${bannerUrl})`);
         })
-        .catch(err => console.error(`[BuddySpecial1Bot] Auto-banner failed:`, err));
+        .catch(err => console.error(`[BuddySpecial2Bot] Auto-banner failed:`, err));
     }
   }
 
@@ -266,7 +266,7 @@ if (specialBotInstance) {
           await ctx.reply('❌ Video not found or no longer available.');
         }
       } catch (e) {
-        console.error(`[BuddySpecial1Bot] preview error:`, e);
+        console.error(`[BuddySpecial2Bot] preview error:`, e);
         await ctx.reply('❌ Something went wrong while retrieving the video.');
       }
       return;
@@ -274,7 +274,7 @@ if (specialBotInstance) {
 
     if (!slug) {
       await ctx.reply(
-        `👋 Welcome to *BuddySpecial1Bot*!\n\nUse the special links on BuddyStore to access exclusive video collections. 🎬`,
+        `👋 Welcome to *BuddySpecial2Bot*!\n\nUse the special links on BuddyStore to access exclusive video collections. 🎬`,
         { parse_mode: 'Markdown' }
       );
       return;
@@ -330,18 +330,18 @@ if (specialBotInstance) {
           const code = err?.error_code;
           
           if (code === 403 || code === 400 || desc.includes('blocked') || desc.includes('deactivated') || desc.includes('not found')) {
-            console.warn(`[BuddySpecial1Bot] User ${from.id} blocked bot or is deactivated. Aborting delivery.`);
+            console.warn(`[BuddySpecial2Bot] User ${from.id} blocked bot or is deactivated. Aborting delivery.`);
             break; // Stop blasting failing requests to a blocked user
           }
           
           if (code === 429) {
             const retryAfter = err?.parameters?.retry_after || 5;
-            console.warn(`[BuddySpecial1Bot] Rate limited (429). Sleeping ${retryAfter}s.`);
+            console.warn(`[BuddySpecial2Bot] Rate limited (429). Sleeping ${retryAfter}s.`);
             // Step back the loop so we retry this chunk
             i -= chunkSize;
             await new Promise(r => setTimeout(r, retryAfter * 1000));
           } else {
-            console.error(`[BuddySpecial1Bot] Failed to send media to ${from.id}:`, err?.message);
+            console.error(`[BuddySpecial2Bot] Failed to send media to ${from.id}:`, err?.message);
           }
         }
       }
@@ -366,7 +366,7 @@ if (specialBotInstance) {
           { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
         );
       } catch (err) {
-        console.error(`[BuddySpecial1Bot] Failed to send completion message:`, err);
+        console.error(`[BuddySpecial2Bot] Failed to send completion message:`, err);
       }
     })();
   });
@@ -388,7 +388,7 @@ if (specialBotInstance) {
     );
 
     await ctx.reply(
-      `📊 *BuddySpecial1Bot Collections*\n\n${lines.join('\n')}`,
+      `📊 *BuddySpecial2Bot Collections*\n\n${lines.join('\n')}`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -436,19 +436,19 @@ if (specialBotInstance) {
 // ─── Webhook Registration ─────────────────────────────────────────────────────
 export const registerSpecialBotWebhook = async (baseUrl: string, secret?: string): Promise<void> => {
   if (!specialBotInstance) {
-    console.warn('⚠️  BOT_SPECIAL_TOKEN not set — BuddySpecial1Bot webhook not registered');
+    console.warn('⚠️  BOT_SPECIAL_TOKEN not set — BuddySpecial2Bot webhook not registered');
     return;
   }
   const webhookUrl = `${baseUrl}/webhooks/special`;
-  console.log(`🤖 Registering BuddySpecial1Bot webhook → ${webhookUrl}`);
+  console.log(`🤖 Registering BuddySpecial2Bot webhook → ${webhookUrl}`);
   try {
     await specialBotInstance.api.setWebhook(webhookUrl, {
       drop_pending_updates: true,
       ...(secret ? { secret_token: secret } : {}),
     });
-    console.log('✅ BuddySpecial1Bot webhook registered');
+    console.log('✅ BuddySpecial2Bot webhook registered');
   } catch (err: any) {
-    console.error(`❌ BuddySpecial1Bot: Failed to register webhook — ${err.message}`);
+    console.error(`❌ BuddySpecial2Bot: Failed to register webhook — ${err.message}`);
   }
 };
 
@@ -457,8 +457,8 @@ export const deregisterSpecialBotWebhook = async (): Promise<void> => {
   if (!specialBotInstance) return;
   try {
     await specialBotInstance.api.deleteWebhook({ drop_pending_updates: true });
-    console.log('🤖 BuddySpecial1Bot webhook deregistered');
+    console.log('🤖 BuddySpecial2Bot webhook deregistered');
   } catch (err: any) {
-    console.error(`❌ BuddySpecial1Bot: Failed to deregister webhook — ${err.message}`);
+    console.error(`❌ BuddySpecial2Bot: Failed to deregister webhook — ${err.message}`);
   }
 };

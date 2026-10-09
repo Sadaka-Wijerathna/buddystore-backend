@@ -326,7 +326,7 @@ export const getPublicSettings = async (_req: Request, res: Response): Promise<v
     
     // Default if not set
     if (!map['TRENDING_BOT_USERNAME']) {
-      map['TRENDING_BOT_USERNAME'] = 'BuddySpecial1Bot';
+      map['TRENDING_BOT_USERNAME'] = 'BuddySpecial2Bot';
     }
 
     // Settings rarely change — safe to cache for 5 minutes.
