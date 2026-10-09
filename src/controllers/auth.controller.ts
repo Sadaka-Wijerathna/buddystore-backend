@@ -1456,3 +1456,45 @@ export const deleteAccount = async (req: AuthRequest, res: Response): Promise<vo
     res.status(500).json({ success: false, message: 'Server error while deleting account' });
   }
 };
+
+// ─── Get My Bots (Connected Status) ─────────────────────────────────────────
+export const getMyBots = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: { telegramId: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ success: false, message: 'User not found' });
+      return;
+    }
+
+    const tgIdStr = user.telegramId.toString();
+
+    const bots = await prisma.bot.findMany({
+      select: {
+        category: true,
+        label: true,
+        name: true,
+        bannerUrl: true,
+        startedUserIds: true,
+      },
+      orderBy: { category: 'asc' },
+    });
+
+    const data = bots.map((b) => ({
+      category: b.category,
+      label: b.label || b.category,
+      botHandle: `@${b.name}`,
+      bannerUrl: b.bannerUrl,
+      isConnected: b.startedUserIds.includes(tgIdStr),
+      connectUrl: `https://t.me/${b.name}`,
+    }));
+
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[getMyBots]', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};

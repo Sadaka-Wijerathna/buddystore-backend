@@ -253,6 +253,20 @@ router.get('/me/bot-status', authenticate, authController.getBotStatus);
 
 /**
  * @swagger
+ * /auth/me/bots:
+ *   get:
+ *     summary: Fetch all category bots and user's connection status
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of bots with connection status
+ */
+router.get('/me/bots', authenticate, authController.getMyBots);
+
+/**
+ * @swagger
  * /auth/me/photo:
  *   get:
  *     summary: Fetch the user's Telegram profile photo URL
