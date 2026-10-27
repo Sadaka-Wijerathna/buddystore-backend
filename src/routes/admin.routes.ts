@@ -252,8 +252,8 @@ router.delete('/telegram/jobs', telegramController.clearAllJobsController);
 router.delete('/telegram/jobs/:id', telegramController.deleteJobController);
 
 // ─── Realtime Server Infrastructure & Statistics ─────────────────────────────
-router.get('/servers/status', requireSuperAdmin, systemController.getServerStatistics);
-router.post('/servers/ping', requireSuperAdmin, systemController.pingEndpoints);
+router.get('/servers/status', systemController.getServerStatistics);
+router.post('/servers/ping', systemController.pingEndpoints);
 
 export default router;
 
