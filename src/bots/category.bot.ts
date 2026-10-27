@@ -644,7 +644,14 @@ export class CategoryBot {
     console.log(`🤖 Registering ${this.name} webhook → ${webhookUrl}`);
     try {
       await this.bot.api.setWebhook(webhookUrl, {
-        drop_pending_updates: true,
+        drop_pending_updates: false,
+        allowed_updates: [
+          'message',
+          'callback_query',
+          'pre_checkout_query',
+          'my_chat_member',
+        ],
+        ...(process.env.WEBHOOK_IP_ADDRESS ? { ip_address: process.env.WEBHOOK_IP_ADDRESS } : {}),
         ...(secret ? { secret_token: secret } : {}),
       });
       console.log(`✅ ${this.name} webhook registered`);

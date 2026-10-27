@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as adminController from '../controllers/admin.controller';
 import * as telegramController from '../controllers/telegram.controller';
+import * as systemController from '../controllers/system.controller';
 import { authenticate, requireAdmin, requireSuperAdmin } from '../middleware/auth.middleware';
 import upload from '../middleware/upload.middleware';
 
@@ -249,6 +250,10 @@ router.post('/telegram/logout', telegramController.logoutController);
 router.post('/telegram/reset-checkpoints', telegramController.resetCheckpointsController);
 router.delete('/telegram/jobs', telegramController.clearAllJobsController);
 router.delete('/telegram/jobs/:id', telegramController.deleteJobController);
+
+// ─── Realtime Server Infrastructure & Statistics ─────────────────────────────
+router.get('/servers/status', requireSuperAdmin, systemController.getServerStatistics);
+router.post('/servers/ping', requireSuperAdmin, systemController.pingEndpoints);
 
 export default router;
 
