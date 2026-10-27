@@ -4,6 +4,16 @@
  * subsequent imports (Express, Prisma, Telegram bots, Socket.io, etc.).
  */
 import * as Sentry from '@sentry/node';
+import dns from 'dns';
+
+// Ensure IPv4 is prioritized for all network calls (avoids ETIMEDOUT on AWS EC2 without IPv6 routes)
+dns.setDefaultResultOrder('ipv4first');
+
+import net from 'net';
+if (typeof (net as any).setDefaultAutoSelectFamily === 'function') {
+  (net as any).setDefaultAutoSelectFamily(false);
+}
+
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,

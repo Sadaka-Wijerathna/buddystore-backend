@@ -7,9 +7,9 @@ function createPrismaClient() {
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     // Prevent "too many clients" errors on Render/Neon free tier.
-    // Free PostgreSQL plans cap at ~25 total connections across all services.
+    min: 2,              // keep 2 connections pre-warmed so queries never suffer a 1.6s cold connection handshake
     max: 5,              // max 5 concurrent DB connections
-    idleTimeoutMillis: 60_000,        // close idle connections after 60s (< Supabase's ~5m cutoff)
+    idleTimeoutMillis: 180_000,       // close idle connections after 3m (< Supabase's ~5m cutoff)
     connectionTimeoutMillis: 20_000,  // fail fast if no connection available in 20s
     // ── Supabase pooler keepalive ───────────────────────────────────────────
     // Supabase's connection pooler silently drops idle TCP connections after
