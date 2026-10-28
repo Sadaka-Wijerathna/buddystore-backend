@@ -313,6 +313,14 @@ export const listJobsController = async (req: AuthRequest, res: Response): Promi
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
+
+    const checkpointKeys = jobs.map(
+      (j) => `telegram_last_msg_id_${j.sourceChat.replace(/[@+]/g, '')}_${j.targetBot.replace(/[@+]/g, '')}`
+    );
+    const settings = await prisma.setting.findMany({
+      where: { key: { in: checkpointKeys } },
+    });
+    const checkpointMap = new Map(settings.map((s) => [s.key, parseInt(s.value, 10)]));
     
     const formattedJobs = jobs.map((j) => {
       let logsArr = [];
@@ -321,7 +329,14 @@ export const listJobsController = async (req: AuthRequest, res: Response): Promi
           logsArr = typeof j.logs === 'string' ? JSON.parse(j.logs) : j.logs;
         } catch (_) {}
       }
-      return { ...j, logs: logsArr };
+      const chkKey = `telegram_last_msg_id_${j.sourceChat.replace(/[@+]/g, '')}_${j.targetBot.replace(/[@+]/g, '')}`;
+      const checkpointMsgId = checkpointMap.get(chkKey) ?? null;
+
+      return {
+        ...j,
+        logs: logsArr,
+        checkpointMsgId,
+      };
     });
 
     res.json({ success: true, data: formattedJobs });
