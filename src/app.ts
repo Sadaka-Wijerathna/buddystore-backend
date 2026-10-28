@@ -20,7 +20,9 @@ import importerRoutes from './routes/importer.routes';
 import { errorHandler, notFound } from './middleware/error.middleware';
 import { sanitizeInput } from './middleware/sanitize.middleware';
 import { generalLimiter } from './middleware/rateLimit.middleware';
-import { authenticate } from './middleware/auth.middleware';
+import { authenticate, requireAdmin } from './middleware/auth.middleware';
+import { metricsMiddleware } from './middleware/metrics.middleware';
+import { metricsHandler } from './lib/metrics';
 
 const app = express();
 
@@ -132,8 +134,31 @@ app.use('/webhooks', (req, res, next) => {
   }
 });
 
+// ─── Prometheus Metrics Middleware (HTTP instrumentation) ───────────────────────
+// Must be registered BEFORE routes so every request is measured.
+app.use(metricsMiddleware);
+
 // ─── API Middleware (applied only after webhook routes) ───────────────────────
 app.use(sanitizeInput);
+
+// ─── Prometheus /metrics Endpoint ─────────────────────────────────────────────
+// Scraped by Prometheus. Accepts scraper secret (Bearer/x-metrics-secret/x-api-secret)
+// or Admin JWT session.
+app.get('/metrics', (req, res) => {
+  const metricsSecret = process.env.METRICS_SECRET || process.env.IMPORTER_API_SECRET;
+  const authHeader = req.headers.authorization;
+  const secretHeader = req.headers['x-metrics-secret'] || req.headers['x-api-secret'];
+
+  if (metricsSecret && (secretHeader === metricsSecret || authHeader === `Bearer ${metricsSecret}`)) {
+    return metricsHandler(req, res);
+  }
+
+  return authenticate(req, res, () => {
+    requireAdmin(req, res, () => {
+      metricsHandler(req, res);
+    });
+  });
+});
 
 // ─── API Routes ─────────────────────────────────────────────────────────────
 if (process.env.ENABLE_DOCS !== 'false') {

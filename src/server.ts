@@ -15,6 +15,7 @@ import prisma from './lib/prisma';
 import { initCronJobs } from './jobs/cron';
 import { startRecoverySweeper, stopRecoverySweeper } from './jobs/recoverySweeper.job';
 import { startBroadcastWorker, stopBroadcastWorker } from './jobs/broadcast.worker';
+import { startServerHealthMonitor, stopServerHealthMonitor } from './jobs/serverHealthMonitor.job';
 
 async function bootstrap() {
   const httpServer = http.createServer(app);
@@ -22,6 +23,7 @@ async function bootstrap() {
   initCronJobs();
   startRecoverySweeper();
   startBroadcastWorker();
+  startServerHealthMonitor();
 
   // Reset any orphan import jobs from previous server restarts
   try {
@@ -96,6 +98,7 @@ async function bootstrap() {
     ]);
     stopRecoverySweeper();
     stopBroadcastWorker();
+    stopServerHealthMonitor();
 
     httpServer.close();
     if (worker) worker.close();
