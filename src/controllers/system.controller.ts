@@ -17,6 +17,9 @@ interface BotWebhookStatus {
   lastErrorMessage: string | null;
 }
 
+// In-memory delta tracker for real bytes/sec throughput across polls
+let lastNetworkSample: { time: number; rxBytes: number; txBytes: number } | null = null;
+
 export const getServerStatistics = async (req: Request, res: Response): Promise<void> => {
   const startTime = performance.now();
 
@@ -72,13 +75,33 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
   // ── Network I/O ──────────────────────────────────────────────────────────
   // Take the first non-loopback interface (eth0, ens3, etc.)
   const primaryNet = netStats.find((n) => n.iface !== 'lo') ?? netStats[0] ?? null;
+
+  // Real delta speed calculation
+  const nowMs = Date.now();
+  let liveRxSec = Math.round(primaryNet?.rx_sec ?? 0);
+  let liveTxSec = Math.round(primaryNet?.tx_sec ?? 0);
+
+  if (primaryNet && (!liveRxSec || liveRxSec === 0) && lastNetworkSample) {
+    const elapsedSec = (nowMs - lastNetworkSample.time) / 1000;
+    if (elapsedSec >= 1 && elapsedSec <= 120) {
+      const rxDiff = Math.max(0, primaryNet.rx_bytes - lastNetworkSample.rxBytes);
+      const txDiff = Math.max(0, primaryNet.tx_bytes - lastNetworkSample.txBytes);
+      liveRxSec = Math.round(rxDiff / elapsedSec);
+      liveTxSec = Math.round(txDiff / elapsedSec);
+    }
+  }
+
+  if (primaryNet) {
+    lastNetworkSample = { time: nowMs, rxBytes: primaryNet.rx_bytes, txBytes: primaryNet.tx_bytes };
+  }
+
   const networkStats = primaryNet
     ? {
         interface: primaryNet.iface,
         rxBytesTotal: primaryNet.rx_bytes,
         txBytesTotal: primaryNet.tx_bytes,
-        rxBytesPerSec: Math.round(primaryNet.rx_sec ?? 0),
-        txBytesPerSec: Math.round(primaryNet.tx_sec ?? 0),
+        rxBytesPerSec: liveRxSec,
+        txBytesPerSec: liveTxSec,
         rxErrors: primaryNet.rx_errors ?? 0,
         txErrors: primaryNet.tx_errors ?? 0,
         rxDropped: primaryNet.rx_dropped ?? 0,
