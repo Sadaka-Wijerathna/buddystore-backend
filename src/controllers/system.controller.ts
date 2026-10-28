@@ -20,17 +20,20 @@ interface BotWebhookStatus {
 // In-memory delta tracker for real bytes/sec throughput across polls
 let lastNetworkSample: { time: number; rxBytes: number; txBytes: number } | null = null;
 
+// Cache bot webhook statuses for 60 seconds to prevent hitting Telegram rate limits on 5s poll cycles
+let cachedBotsStatus: { timestamp: number; bots: BotWebhookStatus[] } | null = null;
+const BOT_STATUS_CACHE_TTL_MS = 60 * 1000;
+
 export const getServerStatistics = async (req: Request, res: Response): Promise<void> => {
   const startTime = performance.now();
 
   // ── 1. Backend Server Stats — via systeminformation (Option 3) ────────────
-  // All gathered in parallel — non-blocking, no shell spawning
-  const [cpuLoad, mem, fsInfo, netStats, processes, nodeVersion] = await Promise.all([
+  // All gathered in parallel — non-blocking, lightweight OS telemetry
+  const [cpuLoad, mem, fsInfo, netStats, nodeVersion] = await Promise.all([
     si.currentLoad().catch(() => null),           // Real-time per-core CPU % (not loadavg)
     si.mem().catch(() => null),                   // Memory: total/used/free/cached/swap
     si.fsSize().catch(() => []),                  // Per-mount disk usage
     si.networkStats().catch(() => []),            // Network I/O: bytes/sec in & out
-    si.processes().catch(() => null),             // All OS processes (for per-process lookup)
     si.versions('node').catch(() => null),        // Node version string
   ]);
 
@@ -111,9 +114,7 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
 
   // ── Process info (this Node.js process, from /proc) ───────────────────────
   const memUsage = process.memoryUsage();
-  // Find this process in the si.processes() list for real per-process CPU
-  const thisProc = processes?.list?.find((p) => p.pid === process.pid);
-  const processCpuPercent = thisProc?.cpu ?? currentCpuPercent;
+  const processCpuPercent = currentCpuPercent;
 
   const processStats = {
     pid: process.pid,
@@ -269,76 +270,85 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
     telegramLatencyMs = Math.round((performance.now() - tgT0) * 10) / 10;
   } catch (_) {}
 
-  const botsStatus: BotWebhookStatus[] = [];
+  let botsStatus: BotWebhookStatus[] = [];
 
-  const fetchWebhookInfo = async (name: string, category: string, token: string): Promise<BotWebhookStatus> => {
-    try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      const data: any = await res.json();
-      if (data.ok && data.result) {
-        const pending = data.result.pending_update_count ?? 0;
-        botPendingUpdates.set({ bot_name: name }, pending); // Record to Prometheus gauge
+  const now = Date.now();
+  if (cachedBotsStatus && now - cachedBotsStatus.timestamp < BOT_STATUS_CACHE_TTL_MS) {
+    botsStatus = cachedBotsStatus.bots;
+  } else {
+    const fetchWebhookInfo = async (name: string, category: string, token: string): Promise<BotWebhookStatus> => {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`, {
+          signal: AbortSignal.timeout(2500),
+        });
+        const data: any = await res.json();
+        if (data.ok && data.result) {
+          const pending = data.result.pending_update_count ?? 0;
+          botPendingUpdates.set({ bot_name: name }, pending); // Record to Prometheus gauge
+          return {
+            name,
+            category,
+            username: name,
+            status: 'ACTIVE',
+            url: data.result.url || null,
+            ipAddress: data.result.ip_address || null,
+            pendingUpdates: pending,
+            lastErrorMessage: data.result.last_error_message || null,
+          };
+        }
         return {
           name,
           category,
           username: name,
-          status: 'ACTIVE',
-          url: data.result.url || null,
-          ipAddress: data.result.ip_address || null,
-          pendingUpdates: pending,
-          lastErrorMessage: data.result.last_error_message || null,
+          status: data.error_code === 401 ? 'UNAUTHORIZED' : 'ERROR',
+          url: null,
+          ipAddress: null,
+          pendingUpdates: 0,
+          lastErrorMessage: data.description || 'Unknown error',
+        };
+      } catch (err: any) {
+        return {
+          name,
+          category,
+          username: name,
+          status: 'ERROR',
+          url: null,
+          ipAddress: null,
+          pendingUpdates: 0,
+          lastErrorMessage: err?.message || 'Connection timeout',
         };
       }
-      return {
-        name,
-        category,
-        username: name,
-        status: data.error_code === 401 ? 'UNAUTHORIZED' : 'ERROR',
-        url: null,
-        ipAddress: null,
-        pendingUpdates: 0,
-        lastErrorMessage: data.description || 'Unknown error',
-      };
+    };
+
+    try {
+      const queries: Promise<BotWebhookStatus>[] = [];
+      if (config.bots.main) {
+        queries.push(fetchWebhookInfo('BuddyStoreBot (Main)', 'MAIN', config.bots.main));
+      }
+
+      const dbBots = await prisma.bot.findMany({
+        select: { name: true, category: true, token: true },
+      });
+
+      for (const b of dbBots) {
+        if (b.token) {
+          queries.push(fetchWebhookInfo(b.name, b.category, b.token));
+        }
+      }
+
+      const results = await Promise.allSettled(queries);
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          botsStatus.push(r.value);
+        }
+      }
+
+      if (botsStatus.length > 0) {
+        cachedBotsStatus = { timestamp: now, bots: botsStatus };
+      }
     } catch (err: any) {
-      return {
-        name,
-        category,
-        username: name,
-        status: 'ERROR',
-        url: null,
-        ipAddress: null,
-        pendingUpdates: 0,
-        lastErrorMessage: err?.message || 'Connection timeout',
-      };
+      console.error('[getServerStatistics] Bot status error:', err?.message);
     }
-  };
-
-  try {
-    const queries: Promise<BotWebhookStatus>[] = [];
-    if (config.bots.main) {
-      queries.push(fetchWebhookInfo('BuddyStoreBot (Main)', 'MAIN', config.bots.main));
-    }
-
-    const dbBots = await prisma.bot.findMany({
-      select: { name: true, category: true, token: true },
-    });
-
-    for (const b of dbBots) {
-      if (b.token) {
-        queries.push(fetchWebhookInfo(b.name, b.category, b.token));
-      }
-    }
-
-    const results = await Promise.allSettled(queries);
-    for (const r of results) {
-      if (r.status === 'fulfilled') {
-        botsStatus.push(r.value);
-      }
-    }
-  } catch (err: any) {
-    console.error('[getServerStatistics] Bot status error:', err?.message);
   }
 
   const activeBotsCount = botsStatus.filter((b) => b.status === 'ACTIVE').length;
