@@ -138,9 +138,12 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
     platform: `${os.platform()} (${os.release()})`,
     arch: os.arch(),
     nodeVersion: processStats.nodeVersion,
-    publicIp: '15.252.173.37',
-    privateIp: '172.31.1.61',
-    region: 'ap-south-1 (Mumbai)',
+    // Backend runs on Render (not EC2). Render assigns dynamic hostnames.
+    // Public IP shown is Render's egress; private IP is Render's internal overlay.
+    publicIp: process.env.RENDER_EXTERNAL_HOSTNAME || os.hostname(),
+    privateIp: 'render-internal',
+    provider: 'Render',
+    region: 'ap-south-1 (Mumbai — Render)',
     port: config.port,
     uptimeSeconds: Math.floor(os.uptime()),
     pm2: {
@@ -223,13 +226,18 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
   };
 
   // ── 3. Video Importer Stats & VPC Latency ────────────────────────────────
-  const importerBaseUrl = process.env.VIDEO_IMPORTER_URL || 'http://172.31.13.80:10000';
+  // Importer runs on AWS EC2 Mumbai (t3.micro, ip-172-31-7-41).
+  // Backend (on Render) connects via public IP — not VPC private routing.
+  const importerBaseUrl = process.env.VIDEO_IMPORTER_URL || 'http://15.252.106.157:10000';
+  const importerPublicIp = (process.env.VIDEO_IMPORTER_URL || '')
+    .replace(/^https?:\/\//, '').split(':')[0] || '15.252.106.157';
   let vpcLatencyMs = 0;
   let videoImporterStats: any = {
     service: 'video-importer',
     status: 'OFFLINE',
-    publicIp: '16.4.73.184',
-    privateIp: '172.31.13.80',
+    publicIp: importerPublicIp,
+    privateIp: '172.31.7.41',
+    provider: 'AWS EC2 t3.micro',
     region: 'ap-south-1 (Mumbai)',
     port: 10000,
     latencyMs: null,
@@ -248,8 +256,9 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
       videoImporterStats = {
         ...data,
         status: 'ONLINE',
-        publicIp: '16.4.73.184',
-        privateIp: '172.31.13.80',
+        publicIp: importerPublicIp,
+        privateIp: '172.31.7.41',
+        provider: 'AWS EC2 t3.micro',
         region: 'ap-south-1 (Mumbai)',
         port: 10000,
         latencyMs: vpcLatencyMs,
@@ -389,7 +398,7 @@ export const getServerStatistics = async (req: Request, res: Response): Promise<
 };
 
 export const pingEndpoints = async (req: Request, res: Response): Promise<void> => {
-  const importerBaseUrl = process.env.VIDEO_IMPORTER_URL || 'http://172.31.13.80:10000';
+  const importerBaseUrl = process.env.VIDEO_IMPORTER_URL || 'http://15.252.106.157:10000';
 
   const [dbResult, vpcResult, tgResult] = await Promise.allSettled([
     (async () => {
