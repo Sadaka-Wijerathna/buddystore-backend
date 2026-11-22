@@ -42,6 +42,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
     const {
       jobId, adminId, status, progress, total,
       message, logs, checkpointMsgId,
+      isPremium, sourceDcId, sourceDcName,
     } = req.body;
 
     if (!jobId) { res.sendStatus(400); return; }
@@ -59,13 +60,25 @@ router.post('/webhook', async (req: Request, res: Response) => {
       console.warn(`[importer.webhook] Job not found in DB: "${jobId}" (adminId: ${adminId})`);
     }
 
+    // Build extra metadata string to prepend to message if premium/dc info present
+    let enrichedMessage = message ?? undefined;
+    if (enrichedMessage && (isPremium || sourceDcName)) {
+      const tags: string[] = [];
+      if (isPremium) tags.push('⚡ Premium');
+      if (sourceDcName) tags.push(`📡 ${sourceDcName}`);
+      // Only prefix if not already present
+      if (tags.length && !enrichedMessage.includes('⚡ Premium') && !enrichedMessage.includes('📡')) {
+        enrichedMessage = `${enrichedMessage} | ${tags.join(' | ')}`;
+      }
+    }
+
     await prisma.telegramImportJob.update({
       where: { id: jobId },
       data: {
         status: dbStatus,
         progress: progress ?? undefined,
         total: total ?? undefined,
-        message: message ?? undefined,
+        message: enrichedMessage ?? undefined,
         logs: logs || undefined,
       },
     }).catch((err: any) => {
