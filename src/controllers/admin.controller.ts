@@ -295,7 +295,12 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
         if (baseUrl && newBotInstance.hasToken) {
           const slug = bot.name.replace(/^@/, '').toLowerCase();
           await newBotInstance.registerWebhook(baseUrl, slug, config.default.webhookSecret);
-          console.log(`[updateBotSettings] ✅ Hot-swapped bot for category ${bot.category} with new token`);
+          // ── Invalidate the cached webhook router so the new bot's route is active ──
+          // Without this, the Express router still serves the OLD bot instance for
+          // POST /webhooks/<slug> even though the token & grammY instance were swapped.
+          const { resetWebhookRouter } = await import('../app');
+          resetWebhookRouter();
+          console.log(`[updateBotSettings] ✅ Hot-swapped bot for category ${bot.category} — webhook router reset`);
         }
       } catch (swapErr) {
         console.error('[updateBotSettings] ⚠️  Bot hot-swap failed (DB updated OK):', swapErr);
