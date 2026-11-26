@@ -221,15 +221,27 @@ export const updateBotSettings = async (req: AuthRequest, res: Response): Promis
         res.status(400).json({ success: false, message: 'Token cannot be empty' });
         return;
       }
+      const trimmedToken = token.trim();
       // Basic Telegram token format: digits:alphanumeric (token part is typically 35 chars but allow 30+)
-      if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token.trim())) {
+      if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(trimmedToken)) {
         res.status(400).json({ success: false, message: 'Invalid Telegram bot token format' });
         return;
       }
-      data.token = token.trim();
+      // Verify token with Telegram and auto-resolve the bot's @username handle
+      try {
+        const { Bot: GrammyBot } = await import('grammy');
+        const me = await new GrammyBot(trimmedToken).api.getMe();
+        if (me.username) {
+          data.name = `@${me.username}`;
+        }
+      } catch {
+        res.status(400).json({ success: false, message: 'Invalid or inactive Telegram bot token' });
+        return;
+      }
+      data.token = trimmedToken;
     }
 
-    if (name !== undefined) {
+    if (name !== undefined && !data.name) {
       if (typeof name !== 'string' || !name.trim()) {
         res.status(400).json({ success: false, message: 'Bot handle cannot be empty' });
         return;
