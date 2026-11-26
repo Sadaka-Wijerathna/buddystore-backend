@@ -443,7 +443,7 @@ export const setBotTelegramPhoto = async (req: AuthRequest, res: Response): Prom
     const { Bot: GrammyBot, InputFile } = await import('grammy');
     const tempBot = new GrammyBot(bot.token);
     const inputFile = new InputFile(req.file.buffer, req.file.originalname);
-    await tempBot.api.setMyProfilePhoto(inputFile);
+    await tempBot.api.setMyProfilePhoto({ type: 'static', photo: inputFile });
     res.json({ success: true, message: 'Bot profile photo updated on Telegram' });
   } catch (error) {
     console.error('[setBotTelegramPhoto]', error);
