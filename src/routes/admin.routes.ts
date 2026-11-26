@@ -52,6 +52,12 @@ router.patch('/bots/:id/banner', upload.single('banner'), adminController.update
 router.delete('/bots/:id/videos', adminController.clearBotVideos);
 router.delete('/bots/:id', requireSuperAdmin, adminController.deleteBot);
 
+// Bot Telegram profile
+router.get('/bots/:id/telegram-info', adminController.getBotTelegramInfo);
+router.patch('/bots/:id/telegram-name', adminController.setBotTelegramName);
+router.patch('/bots/:id/telegram-description', adminController.setBotTelegramDescription);
+router.post('/bots/:id/telegram-photo', upload.single('photo'), adminController.setBotTelegramPhoto);
+
 // Special Bot Collections
 /**
  * @swagger

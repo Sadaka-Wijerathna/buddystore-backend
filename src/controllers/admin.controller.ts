@@ -370,6 +370,87 @@ export const updateBotBanner = async (req: AuthRequest, res: Response): Promise<
   }
 };
 
+// ─── Telegram Bot Profile helpers ────────────────────────────────────────────
+// GET /admin/bots/:id/telegram-info
+export const getBotTelegramInfo = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const bot = await prisma.bot.findUnique({ where: { id } });
+    if (!bot) { res.status(404).json({ success: false, message: 'Bot not found' }); return; }
+    if (!bot.token) { res.status(400).json({ success: false, message: 'Bot has no token set' }); return; }
+
+    const { Bot: GrammyBot } = await import('grammy');
+    const tempBot = new GrammyBot(bot.token);
+    const me = await tempBot.api.getMe();
+    res.json({ success: true, data: { id: me.id, username: me.username, first_name: me.first_name } });
+  } catch (error) {
+    console.error('[getBotTelegramInfo]', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch bot info from Telegram' });
+  }
+};
+
+// PATCH /admin/bots/:id/telegram-name
+export const setBotTelegramName = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { name } = req.body;
+    if (!name || typeof name !== 'string') { res.status(400).json({ success: false, message: 'name is required' }); return; }
+
+    const bot = await prisma.bot.findUnique({ where: { id } });
+    if (!bot) { res.status(404).json({ success: false, message: 'Bot not found' }); return; }
+    if (!bot.token) { res.status(400).json({ success: false, message: 'Bot has no token set' }); return; }
+
+    const { Bot: GrammyBot } = await import('grammy');
+    const tempBot = new GrammyBot(bot.token);
+    await tempBot.api.setMyName(name);
+    res.json({ success: true, message: 'Bot display name updated on Telegram' });
+  } catch (error) {
+    console.error('[setBotTelegramName]', error);
+    res.status(500).json({ success: false, message: 'Failed to set bot name' });
+  }
+};
+
+// PATCH /admin/bots/:id/telegram-description
+export const setBotTelegramDescription = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const { description } = req.body;
+
+    const bot = await prisma.bot.findUnique({ where: { id } });
+    if (!bot) { res.status(404).json({ success: false, message: 'Bot not found' }); return; }
+    if (!bot.token) { res.status(400).json({ success: false, message: 'Bot has no token set' }); return; }
+
+    const { Bot: GrammyBot } = await import('grammy');
+    const tempBot = new GrammyBot(bot.token);
+    await tempBot.api.setMyDescription(description ?? '');
+    res.json({ success: true, message: 'Bot description updated on Telegram' });
+  } catch (error) {
+    console.error('[setBotTelegramDescription]', error);
+    res.status(500).json({ success: false, message: 'Failed to set bot description' });
+  }
+};
+
+// POST /admin/bots/:id/telegram-photo
+export const setBotTelegramPhoto = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+
+    const bot = await prisma.bot.findUnique({ where: { id } });
+    if (!bot) { res.status(404).json({ success: false, message: 'Bot not found' }); return; }
+    if (!bot.token) { res.status(400).json({ success: false, message: 'Bot has no token set' }); return; }
+    if (!req.file) { res.status(400).json({ success: false, message: 'No photo file provided' }); return; }
+
+    const { Bot: GrammyBot, InputFile } = await import('grammy');
+    const tempBot = new GrammyBot(bot.token);
+    const inputFile = new InputFile(req.file.buffer, req.file.originalname);
+    await tempBot.api.setMyProfilePhoto(inputFile);
+    res.json({ success: true, message: 'Bot profile photo updated on Telegram' });
+  } catch (error) {
+    console.error('[setBotTelegramPhoto]', error);
+    res.status(500).json({ success: false, message: 'Failed to upload bot profile photo' });
+  }
+};
+
 // ─── Update bot min video count (kept for backwards-compat) ───────────────
 export const updateBotMinVideoCount = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
